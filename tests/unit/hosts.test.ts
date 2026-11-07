@@ -94,8 +94,17 @@ describe('subdomains', () => {
     expect((await get(`${tool}.example.org`, '/deep/link')).body).toContain('tool app');
   });
 
+  it('offers the organiser entry on a survey host, but not the dashboard or other apps', async () => {
+    expect((await get('feedback.example.org', '/admin')).status).toBe(401);
+    expect((await get('feedback.example.org', '/admin', { Authorization: ADMIN })).body).toContain('admin shell');
+    expect((await get('feedback.example.org', '/admin/api/results/example-course-feedback/summary', { Authorization: ADMIN })).status).toBe(200);
+    expect((await get('feedback.example.org', '/admin/api/apps', { Authorization: ADMIN })).status).toBe(404);
+    expect((await get('feedback.example.org', '/admin/results/other', { Authorization: ADMIN })).status).toBe(404);
+  });
+
   it('keeps the administration off app hosts and unknown hosts', async () => {
-    expect((await get('feedback.example.org', '/admin', { Authorization: ADMIN })).status).toBe(404);
+    const tool = registry.get('tool')!.hostLabel;
+    expect((await get(`${tool}.example.org`, '/admin', { Authorization: ADMIN })).body).toContain('tool app');
     expect((await get('feedback.example.org', '/api/surveys/other')).status).toBe(404);
     expect((await get('nothing-here.example.org', '/')).status).toBe(404);
     expect((await get('pwa.example.org', '/admin', { Authorization: ADMIN })).status).toBe(200);

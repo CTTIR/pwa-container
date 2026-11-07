@@ -82,6 +82,11 @@ export interface SurveyDefinition {
   opensAt?: string;
   closesAt?: string;
   maxResponses?: number;
+  /**
+   * Single-use access codes per course. "required": every response needs an unused code and is
+   * assigned to the code's course (the code itself is not stored with the response).
+   */
+  accessCodes?: 'required' | 'optional';
   intro: TextBlock;
   privacy?: TextBlock;
   thanks: TextBlock;
@@ -171,6 +176,9 @@ export function validateDefinition(raw: unknown): string[] {
   checkDate(d.closesAt, 'closesAt', errors);
   if (d.maxResponses !== undefined && (!Number.isInteger(d.maxResponses) || (d.maxResponses as number) < 1)) {
     errors.push('maxResponses must be a positive integer');
+  }
+  if (d.accessCodes !== undefined && d.accessCodes !== 'required' && d.accessCodes !== 'optional') {
+    errors.push('accessCodes must be "required" or "optional"');
   }
   checkTextBlock(d.intro, 'intro', errors);
   checkTextBlock(d.thanks, 'thanks', errors);
@@ -355,4 +363,26 @@ export function surveyStatus(def: SurveyDefinition, now: Date = new Date()): Sur
   if (def.opensAt && now < new Date(def.opensAt)) return 'not_yet_open';
   if (def.closesAt && now > new Date(def.closesAt)) return 'closed';
   return 'open';
+}
+
+// ---- access codes ----
+
+/** Unambiguous characters (no 0/O, 1/I/L). */
+export const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export const CODE_LENGTH = 8;
+
+/** Uppercase, without separators or spaces: "k7m2-q9xw" -> "K7M2Q9XW". */
+export function normalizeCode(input: string): string {
+  return input
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+export function isWellFormedCode(code: string): boolean {
+  return code.length === CODE_LENGTH && [...code].every((c) => CODE_ALPHABET.includes(c));
+}
+
+/** Display form "K7M2-Q9XW". */
+export function formatCode(code: string): string {
+  return code.length === CODE_LENGTH ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 }

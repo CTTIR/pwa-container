@@ -33,12 +33,16 @@ function remove(key: string): void {
 export interface Draft {
   answers: Answers;
   step: number;
+  code?: string;
+  course?: string | null;
 }
 
 export interface Outbox {
   submissionId: string;
   surveyVersion: number;
   answers: Answers;
+  code?: string;
+  course?: string | null;
 }
 
 const draftKey = (id: string, version: number) => `${PREFIX}:draft:${id}:v${version}`;

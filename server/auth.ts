@@ -67,7 +67,11 @@ const SOURCE_WINDOW_MS = 15 * 60_000;
 /** Per source: sign-ins that may be in progress (checking or pausing after a failure) at once. */
 const SOURCE_MAX_CONCURRENT = 2;
 const MAX_DELAY_MS = 10_000;
+/** Sources past SOURCE_MAX_FAILURES: the pause doubles per further failure up to this. */
+const BLOCKED_MAX_DELAY_MS = 5 * 60_000;
 const OVERFLOW_KEY = 'overflow';
+/** The shared bucket for sources beyond the table limit gets more room than a single source. */
+const OVERFLOW_MAX_CONCURRENT = 10;
 
 interface SourceState {
   failures: number[];
@@ -130,19 +134,26 @@ export class AdminAuth {
     return this.failures.length;
   }
 
-  /** Pause after a failed attempt: grows with the source's and (a little) with all recent failures. */
+  /**
+   * Pause after a failed attempt, during which the source keeps its sign-in slot. It grows with
+   * the source's recent failures (and a little with all failures); past SOURCE_MAX_FAILURES it
+   * doubles with every further failure up to five minutes, so a blocked source can hardly guess
+   * at all while its correct credentials would still be accepted.
+   */
   delayFor(state: SourceState, now = Date.now()): number {
-    return Math.min(600 + 300 * state.failures.length + 10 * this.recentGlobalFailures(now), MAX_DELAY_MS);
+    const f = state.failures.length;
+    if (f > SOURCE_MAX_FAILURES) return Math.min(MAX_DELAY_MS * 2 ** (f - SOURCE_MAX_FAILURES - 1), BLOCKED_MAX_DELAY_MS);
+    return Math.min(600 + 300 * f + 10 * this.recentGlobalFailures(now), MAX_DELAY_MS);
   }
 
-  private sourceState(address: string, now: number): SourceState {
+  private sourceState(address: string, now: number): SourceState & { key: string } {
     const prune = (st: SourceState) => {
       st.failures = st.failures.filter((t) => now - t < SOURCE_WINDOW_MS);
       return st;
     };
     let key = createHmac('sha256', this.sourceSecret).update(sourceGroup(address)).digest('base64url');
     const existing = this.sources.get(key);
-    if (existing) return prune(existing);
+    if (existing) return Object.assign(prune(existing), { key });
     if (this.sources.size >= this.maxSources) {
       // Only forget sources with nothing to remember; never evict a source with recent failures.
       for (const [k, v] of this.sources) {
@@ -155,7 +166,7 @@ export class AdminAuth {
       state = { failures: [], inFlight: 0 };
       this.sources.set(key, state);
     }
-    return prune(state);
+    return Object.assign(prune(state), { key });
   }
 
   /** Limits concurrent password checks so a flood of attempts cannot exhaust the CPU. */
@@ -177,15 +188,17 @@ export class AdminAuth {
    * Checks an Authorization header. Global credentials give full access; survey credentials
    * only give access to the results of that one survey.
    *
-   * Correct credentials are always accepted. Failed attempts are slowed down per source: the
-   * source keeps its sign-in slot during a growing pause (up to 10 s) and may only have two
-   * sign-ins in progress, which caps how fast any one source can guess. Sources with many recent
-   * failures get 'blocked' (HTTP 429) for further wrong passwords.
+   * Correct credentials are always accepted, so nobody can lock an administrator out. Failed
+   * attempts are slowed down per source: the source keeps its sign-in slot during a pause that
+   * grows with its failures (exponentially up to five minutes once it is past the limit), and it
+   * may only have two sign-ins in progress. Further wrong passwords from such a source get
+   * 'blocked' (HTTP 429). Long random passwords remain the main protection.
    */
   async authenticate(header: string | undefined, surveyId?: string, source = 'unknown'): Promise<AuthResult> {
     if (!header || !header.startsWith('Basic ')) return null;
     const state = this.sourceState(source, Date.now());
-    if (state.inFlight >= SOURCE_MAX_CONCURRENT) return 'busy';
+    const limit = state.key === OVERFLOW_KEY ? OVERFLOW_MAX_CONCURRENT : SOURCE_MAX_CONCURRENT;
+    if (state.inFlight >= limit) return 'busy';
     state.inFlight += 1;
     try {
       const result = await this.check(header, surveyId);

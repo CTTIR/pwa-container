@@ -86,7 +86,7 @@ describe('participant API', () => {
   it('stores only the day, never a time or client details', () => {
     const [row] = store.list('example-course-feedback');
     expect(row.submittedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(Object.keys(row)).toEqual(['surveyVersion', 'submittedOn', 'answers']);
+    expect(Object.keys(row)).toEqual(['surveyVersion', 'submittedOn', 'course', 'answers']);
   });
 
   it('serves the SPA for survey links and hides admin.html', async () => {
@@ -201,6 +201,10 @@ describe('admin authentication', () => {
     for (let i = 0; i < SOURCE_MAX_FAILURES; i++) expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBeNull();
     expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked');
     expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('global');
+    const state = { failures: Array(SOURCE_MAX_FAILURES + 3).fill(Date.now()), inFlight: 0 };
+    expect(auth.delayFor(state)).toBe(40_000);
+    state.failures = Array(SOURCE_MAX_FAILURES + 20).fill(Date.now());
+    expect(auth.delayFor(state)).toBe(300_000);
     expect(await auth.authenticate(ADMIN, undefined, '198.51.100.2')).toBe('global');
     expect(await auth.authenticate(LEAD, 'example-course-feedback', '198.51.100.2')).toBe('survey');
     expect(await auth.authenticate(LEAD, 'another-survey', '198.51.100.2')).toBe('other');
@@ -242,5 +246,111 @@ describe('admin authentication', () => {
     for (let i = 0; i < SOURCE_MAX_FAILURES; i++) await auth.authenticate(wrong, undefined, '203.0.113.1');
     for (let n = 2; n < 40; n++) await auth.authenticate(wrong, undefined, `203.0.113.${n}`);
     expect(await auth.authenticate(wrong, undefined, '203.0.113.1')).toBe('blocked');
+  });
+});
+
+describe('courses and single-use codes', () => {
+  const def = () => {
+    const d = JSON.parse(fs.readFileSync(path.join(surveysDir, 'example-course-feedback', 'survey.json'), 'utf8'));
+    d.id = 'coded-survey';
+    d.accessCodes = 'required';
+    return d;
+  };
+  const adminWrite = { Authorization: ADMIN, ...WRITE };
+  let codes: string[] = [];
+  let courseId = '';
+
+  it('installs a survey that requires codes and creates a course with codes', async () => {
+    expect((await fetch(`${base}/admin/api/apps/surveys`, { method: 'POST', headers: adminWrite, body: JSON.stringify(def()) })).status).toBe(201);
+    const res = await fetch(`${base}/admin/api/results/coded-survey/courses`, {
+      method: 'POST',
+      headers: adminWrite,
+      body: JSON.stringify({ label: 'Neuwied, November 2026', count: 3 }),
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { course: { id: string }; codes: string[] };
+    courseId = body.course.id;
+    codes = body.codes;
+    expect(codes).toHaveLength(3);
+    for (const c of codes) expect(c).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  });
+
+  const post = (submissionId: string, code?: string) =>
+    fetch(`${base}/api/surveys/coded-survey/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ submissionId, answers, code }),
+    });
+
+  it('checks codes, accepts each once and links the response to the course only', async () => {
+    const check = await fetch(`${base}/api/surveys/coded-survey/code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: codes[0].toLowerCase() }),
+    });
+    expect(await check.json()).toEqual({ status: 'ok', course: 'Neuwied, November 2026' });
+    expect((await post('55555555-5555-4555-8555-555555555555')).status).toBe(422);
+    expect((await post('55555555-5555-4555-8555-555555555555', 'ZZZZ-ZZZZ')).status).toBe(422);
+    expect((await post('55555555-5555-4555-8555-555555555555', codes[0])).status).toBe(201);
+    expect((await post('55555555-5555-4555-8555-555555555555', codes[0])).status).toBe(200); // retry of the same submission
+    expect((await post('66666666-6666-4666-8666-666666666666', codes[0])).status).toBe(409); // code already used
+    const [row] = store.list('coded-survey');
+    expect(row.course).toBe('Neuwied, November 2026');
+    expect(JSON.stringify(row)).not.toContain(codes[0].replace('-', ''));
+  });
+
+  it('lists, blocks and unblocks codes, renames the course and filters exports by course', async () => {
+    const list = (await (await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}/codes`, { headers: { Authorization: ADMIN } })).json()) as {
+      codes: { code: string; used: boolean; revoked: boolean }[];
+    };
+    expect(list.codes.filter((c) => c.used)).toHaveLength(1);
+    await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}/revoke`, {
+      method: 'POST',
+      headers: adminWrite,
+      body: JSON.stringify({ codes: [codes[1]], revoked: true }),
+    });
+    expect((await post('77777777-7777-4777-8777-777777777777', codes[1])).status).toBe(422);
+    await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}/revoke`, {
+      method: 'POST',
+      headers: adminWrite,
+      body: JSON.stringify({ codes: [codes[1]], revoked: false }),
+    });
+    expect((await post('77777777-7777-4777-8777-777777777777', codes[1])).status).toBe(201);
+    await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}`, { method: 'PATCH', headers: adminWrite, body: JSON.stringify({ label: 'Neuwied 11/2026' }) });
+    const csv = await (await fetch(`${base}/admin/api/results/coded-survey/export.csv?course=${courseId}`, { headers: { Authorization: ADMIN } })).text();
+    expect(csv.split('\r\n')[0]).toContain('course');
+    expect(csv).toContain('Neuwied 11/2026');
+    expect(csv.trim().split('\r\n')).toHaveLength(3);
+    const del = await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}`, { method: 'DELETE', headers: adminWrite });
+    expect(del.status).toBe(409); // responses still belong to the course
+  });
+});
+
+describe('records of web apps', () => {
+  const auth = { Authorization: ADMIN, 'X-Requested-With': 'pwa-container' };
+  const send = (body: unknown) =>
+    fetch(`${base}/api/apps/demo-app/records`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('refuses records until collecting is switched on', async () => {
+    expect((await send({ data: { a: 1 } })).status).toBe(403);
+    await fetch(`${base}/admin/api/apps/demo-app`, { method: 'PATCH', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ collectRecords: true }) });
+    expect((await send({ collection: 'sessions', data: { score: 7, nested: { x: 'y' }, list: [1, 2] } })).status).toBe(201);
+    expect((await send({ collection: 'sessions', data: { score: 3 } })).status).toBe(201);
+    expect((await send({ collection: 'bad name!', data: {} })).status).toBe(400);
+  });
+
+  it('offers overview and downloads in the administration', async () => {
+    const info = (await (await fetch(`${base}/admin/api/records/demo-app`, { headers: { Authorization: ADMIN } })).json()) as {
+      total: number;
+      collections: { collection: string; records: number }[];
+    };
+    expect(info.total).toBe(2);
+    expect(info.collections).toEqual([{ collection: 'sessions', records: 2 }]);
+    const csv = await (await fetch(`${base}/admin/api/records/demo-app/records.csv?collection=sessions`, { headers: { Authorization: ADMIN } })).text();
+    expect(csv.split('\r\n')[0]).toBe('record,collection,received_on,score,nested.x,list');
+    const json = (await (await fetch(`${base}/admin/api/records/demo-app/records.json`, { headers: { Authorization: ADMIN } })).json()) as { records: unknown[] };
+    expect(json.records).toHaveLength(2);
+    const del = await fetch(`${base}/admin/api/records/demo-app?confirm=demo-app`, { method: 'DELETE', headers: auth });
+    expect(((await del.json()) as { removed: number }).removed).toBe(2);
   });
 });

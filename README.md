@@ -6,8 +6,18 @@ subdomain:
 - **Surveys** are described in a JSON file. Participants open them from a link or QR code on their
   phone. No account or app installation is needed. The page keeps working on a weak connection:
   answers stay on the device until the server confirms them.
+- **Single-use access codes per course** (optional per survey):
+  - Organisers create a course, generate codes and print them as slips. Each slip has its own QR
+    code that already contains the code.
+  - A response needs an unused code and is linked only to the course, never to the code.
+  - Results and exports can be filtered by course.
+  - Courses and codes are stored in the database. In the administration codes can be listed,
+    reprinted, blocked or unblocked, and courses renamed.
 - **Other web apps / PWAs** (any folder of static files with an `index.html`) can be uploaded
   through the administration page and are served unchanged on their own subdomain.
+  - If switched on per app, they can send **data records** to the container (`POST /api/records`,
+    or the offline-capable helper `/_pwa/records.js`).
+  - The administration shows the collections and offers downloads as XLSX, CSV and JSON.
 - An **administration page** lists all apps and handles the everyday tasks:
   - Open, close, enable or disable an app.
   - Set or randomise its subdomain, and show or download its QR code.
@@ -32,9 +42,12 @@ Survey responses are anonymous by construction:
 | Routing | `<label>.APP_DOMAIN` per app; Traefik routes are written to a file-provider file |
 
 ```
-https://ADMIN_HOST/admin                 administration (global admin)
-https://ADMIN_HOST/admin/results/<id>    results of one survey (global admin or that survey's credentials)
-https://<label>.APP_DOMAIN/              a survey or uploaded web app
+https://ADMIN_HOST/admin                 administration of all apps (global admin)
+https://ADMIN_HOST/admin/results/<id>    results, courses and codes of one survey
+https://ADMIN_HOST/admin/records/<id>    data records of one app
+https://<label>.APP_DOMAIN/              a survey or uploaded web app (participants)
+https://<label>.APP_DOMAIN/admin         organiser entry of a survey (global admin or that survey's credentials)
+https://<label>.APP_DOMAIN/#code=XXXX-XXXX   survey link with a single-use code (as printed on the slips)
 https://ADMIN_HOST/s/<surveyId>          path-based survey link (also works without subdomains)
 ```
 
@@ -58,6 +71,7 @@ A survey is one `survey.json`. See
     by hand.
   - `subdomain`: the preferred label when the survey is first installed; otherwise a random one is
     assigned.
+  - `accessCodes`: `"required"` or `"optional"` switches on single-use codes per course.
   - `theme`: the name of a folder in `/themes` with a `theme.css` that overrides the CSS variables
     in [`src/styles.css`](src/styles.css).
 - **Versions:** once a version has responses, its content cannot change without increasing
@@ -71,6 +85,27 @@ Surveys come from two places:
 2. **Uploaded** through the administration page and stored in `/data/apps/<id>/`.
 
 Validate a file with `node server/cli.ts validate path/to/survey.json`.
+
+## Data records from web apps
+
+An uploaded app sends records to its own host. Collecting is off until it is switched on for that
+app in the administration:
+
+```html
+<script src="/_pwa/records.js"></script>
+<script>
+  pwaRecords.submit({ score: 7, answers: ['a', 'b'] }, { collection: 'sessions' });
+</script>
+```
+
+- **Helper script:** records wait in `localStorage` while offline and are resent automatically.
+- **Without the helper:** `POST /api/records` with `{"collection": "sessions", "data": {…}}`
+  answers 201.
+- **Storage:** the server keeps the record, its collection and the calendar day, in random order.
+  At most 50,000 records per app and 256 KB per record.
+- **Downloads:**
+  - JSON with the original structure.
+  - CSV and XLSX with nested fields flattened to dotted columns, one sheet per collection.
 
 ## Administration access
 
@@ -99,7 +134,9 @@ Behind Traefik set `TRUST_PROXY=1` so the address set by Traefik is used. The se
 if requests arrive through a proxy without it.
 
 Create a hash with `printf '%s' 'long password' | docker exec -i pwa-container node server/cli.ts hash-password`.
-Global users manage everything; survey users only see that survey's results. The file is re-read on
+Global users manage everything. Survey (or app) users see only that survey's results, courses and
+codes, or that app's records. They can sign in at `<label>.APP_DOMAIN/admin` or
+`ADMIN_HOST/admin/results/<id>`. The file is re-read on
 every request, so changes apply without a restart.
 
 ## Deployment behind Traefik

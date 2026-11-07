@@ -32,6 +32,18 @@ export interface Strings {
   loading: string;
   edit: string;
   sentOk: string;
+  codeLabel: string;
+  codeHint: string;
+  codeOptionalHint: string;
+  codeStart: string;
+  codeChecking: string;
+  codeUnknown: string;
+  codeUsed: string;
+  codeRequired: string;
+  codeOffline: string;
+  course: (label: string) => string;
+  codeResubmit: string;
+  organiser: string;
 }
 
 const de: Strings = {
@@ -67,6 +79,18 @@ const de: Strings = {
   loading: 'Wird geladen …',
   edit: 'Bearbeiten',
   sentOk: 'Vielen Dank! Die Antworten wurden gesendet.',
+  codeLabel: 'Zugangscode',
+  codeHint: 'Den Code vom ausgeteilten Zettel eingeben (z. B. K7M2-Q9XW). Er gilt nur einmal und ordnet die Antworten dem Kurs zu, nicht einer Person.',
+  codeOptionalHint: 'Falls vorhanden, den Code vom ausgeteilten Zettel eingeben.',
+  codeStart: 'Code prüfen und starten',
+  codeChecking: 'Code wird geprüft …',
+  codeUnknown: 'Dieser Code ist nicht bekannt. Bitte Eingabe prüfen.',
+  codeUsed: 'Dieser Code wurde bereits verwendet.',
+  codeRequired: 'Bitte den Zugangscode eingeben.',
+  codeOffline: 'Keine Verbindung: Der Code wird beim Absenden geprüft.',
+  course: (label) => `Kurs: ${label}`,
+  codeResubmit: 'Bitte einen gültigen, unbenutzten Code eingeben und erneut absenden.',
+  organiser: 'Zugang Kursleitung / Admin',
 };
 
 const en: Strings = {
@@ -102,6 +126,18 @@ const en: Strings = {
   loading: 'Loading …',
   edit: 'Edit',
   sentOk: 'Thank you! Your answers have been sent.',
+  codeLabel: 'Access code',
+  codeHint: 'Enter the code from the slip you received (e.g. K7M2-Q9XW). It works once and links the answers to the course, not to a person.',
+  codeOptionalHint: 'If you have one, enter the code from the slip you received.',
+  codeStart: 'Check code and start',
+  codeChecking: 'Checking code …',
+  codeUnknown: 'This code is not known. Please check your entry.',
+  codeUsed: 'This code has already been used.',
+  codeRequired: 'Please enter the access code.',
+  codeOffline: 'No connection: the code will be checked when you submit.',
+  course: (label) => `Course: ${label}`,
+  codeResubmit: 'Please enter a valid, unused code and submit again.',
+  organiser: 'Organiser access',
 };
 
 export function stringsFor(locale: Locale | undefined): Strings {

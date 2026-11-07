@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Inline } from '../components/RichText.tsx';
 import { Shell } from '../components/Shell.tsx';
+import { Courses, PrintSheet, type CodeSheet } from './Courses.tsx';
 import { downloadJson, downloadXlsx } from './exportXlsx.ts';
 import type { FieldInfo, FieldSummary, ResponsesResponse, SummaryResponse } from './types.ts';
 
-const api = (surveyId: string, resource: string) => `/admin/api/results/${encodeURIComponent(surveyId)}/${resource}`;
+const api = (surveyId: string, resource: string, course?: string) =>
+  `/admin/api/results/${encodeURIComponent(surveyId)}/${resource}${course ? `?course=${encodeURIComponent(course)}` : ''}`;
 
 const STATUS: Record<SummaryResponse['survey']['status'], string> = {
   open: 'offen',
@@ -25,10 +27,12 @@ export function Results({ surveyId }: { surveyId: string }) {
   const [data, setData] = useState<SummaryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [course, setCourse] = useState('');
+  const [sheet, setSheet] = useState<CodeSheet | null>(null);
 
-  const load = async () => {
+  const load = async (courseId = course) => {
     try {
-      const res = await fetch(api(surveyId, 'summary'), { cache: 'no-store' });
+      const res = await fetch(api(surveyId, 'summary', courseId), { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setData((await res.json()) as SummaryResponse);
       setError(null);
@@ -44,7 +48,7 @@ export function Results({ surveyId }: { surveyId: string }) {
   const withResponses = async (fn: (r: ResponsesResponse) => Promise<void> | void) => {
     setBusy(true);
     try {
-      const res = await fetch(api(surveyId, 'responses'), { cache: 'no-store' });
+      const res = await fetch(api(surveyId, 'responses', course), { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fn((await res.json()) as ResponsesResponse);
     } catch (err) {
@@ -58,6 +62,11 @@ export function Results({ surveyId }: { surveyId: string }) {
   if (!data) return <Shell title="Auswertung"><p className="status-text">Wird geladen …</p></Shell>;
 
   const { survey, definition, summary, fields } = data;
+  if (sheet) {
+    return <PrintSheet sheet={sheet} surveyTitle={definition.title} surveyUrl={survey.url} onClose={() => setSheet(null)} />;
+  }
+  const suffix = course ? `_${course}` : '';
+  const courseLabel = data.courses.find((c) => c.id === course)?.label;
   const byKey = new Map(summary.map((s) => [s.key, s]));
   const fieldsBySection = new Map<string, FieldInfo[]>();
   for (const f of fields) {
@@ -75,21 +84,52 @@ export function Results({ surveyId }: { surveyId: string }) {
         <div>Version {survey.version}</div>
       </div>
       {error && <div className="panel panel-error">{error}</div>}
+      {data.courses.length > 0 && (
+        <label className="course-filter">
+          Kurs
+          <select
+            className="text-input"
+            value={course}
+            onChange={(e) => {
+              setCourse(e.target.value);
+              void load(e.target.value);
+            }}
+          >
+            <option value="">Alle Kurse</option>
+            {data.courses.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label} ({c.responses})
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <div className="admin-actions">
-        <button className="btn btn-primary" disabled={busy || data.responses === 0} onClick={() => withResponses((r) => downloadXlsx(r, summary))}>
+        <button className="btn btn-primary" disabled={busy || data.responses === 0} onClick={() => withResponses((r) => downloadXlsx(r, summary, suffix))}>
           Excel (XLSX)
         </button>
-        <a className="btn btn-secondary admin-link" href={api(surveyId, 'export.csv')} download>
+        <a className="btn btn-secondary admin-link" href={api(surveyId, 'export.csv', course)} download>
           CSV
         </a>
-        <button className="btn btn-secondary" disabled={busy || data.responses === 0} onClick={() => withResponses(downloadJson)}>
+        <button className="btn btn-secondary" disabled={busy || data.responses === 0} onClick={() => withResponses((r) => downloadJson(r, suffix))}>
           JSON
         </button>
         <button className="btn btn-link" onClick={() => void load()}>Aktualisieren</button>
       </div>
+      {courseLabel && <p className="course-line">Auswertung für: {courseLabel}</p>}
       <p className="admin-note">
         Antworten werden in zufälliger Reihenfolge gespeichert und exportiert; gespeichert ist nur der Abgabetag, keine Uhrzeit.
       </p>
+      {definition.accessCodes && (
+        <Courses
+          surveyId={surveyId}
+          surveyTitle={definition.title}
+          surveyUrl={survey.url}
+          courses={data.courses}
+          onChanged={() => load()}
+          onSheet={setSheet}
+        />
+      )}
       {definition.sections.map((section, i) => (
         <section key={section.id} className="admin-section">
           <h2 className="section-title">

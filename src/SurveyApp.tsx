@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fieldProblem,
   fieldsOf,
+  formatCode,
   isAnswered,
+  normalizeCode,
   type AnswerValue,
   type Answers,
   type SurveyDefinition,
 } from '../shared/schema.ts';
-import { loadSurvey, submitAnswers, type SurveyResponse } from './api.ts';
+import { checkCode, loadSurvey, submitAnswers, type SurveyResponse } from './api.ts';
 import { ItemCard } from './components/ItemCard.tsx';
 import { Legend } from './components/Legend.tsx';
 import { Inline, Paragraphs } from './components/RichText.tsx';
@@ -28,6 +30,21 @@ type Phase =
   | { kind: 'thanks' };
 
 const INTRO = -1;
+
+/** A code handed over in the link (#code=XXXX-XXXX) is taken once and removed from the address bar. */
+function codeFromLink(): string | null {
+  const match = window.location.hash.match(/(?:^#|&)code=([A-Za-z0-9-]{4,20})/);
+  if (!match) return null;
+  try {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  } catch {
+    /* ignore */
+  }
+  return formatCode(normalizeCode(match[1]));
+}
+const linkCode = codeFromLink();
+
+type CodeState = 'idle' | 'checking' | 'ok' | 'unknown' | 'used' | 'offline' | 'required';
 /** Any step past the last section shows the review page. */
 const REVIEW = 9999;
 
@@ -38,6 +55,9 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const [step, setStep] = useState(INTRO);
   const [missing, setMissing] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  const [code, setCode] = useState(linkCode ?? '');
+  const [course, setCourse] = useState<string | null>(null);
+  const [codeState, setCodeState] = useState<CodeState>('idle');
   const sendingRef = useRef(false);
 
   const def = survey?.definition;
@@ -48,7 +68,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       if (sendingRef.current) return;
       sendingRef.current = true;
       setPhase({ kind: 'sending' });
-      const result = await submitAnswers(surveyId, outbox.submissionId, outbox.surveyVersion, outbox.answers);
+      const result = await submitAnswers(surveyId, outbox.submissionId, outbox.surveyVersion, outbox.answers, outbox.code);
       sendingRef.current = false;
       switch (result.kind) {
         case 'stored':
@@ -66,6 +86,19 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         case 'full':
           storage.clearOutbox(surveyId);
           setPhase({ kind: 'unavailable', reason: result.kind });
+          break;
+        case 'code_unknown':
+        case 'code_used':
+        case 'code_required':
+          // Answers stay; the participant enters another code on the review page.
+          storage.clearOutbox(surveyId);
+          setAnswers(outbox.answers);
+          setCode(outbox.code ?? '');
+          setCourse(null);
+          setCodeState(result.kind === 'code_used' ? 'used' : result.kind === 'code_required' ? 'required' : 'unknown');
+          setStep(REVIEW);
+          setNotice('code');
+          setPhase({ kind: 'form' });
           break;
         case 'invalid':
           // The definition changed since the answers were given: put them back for review.
@@ -109,6 +142,11 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       const draft = storage.loadDraft(surveyId, data.definition.version);
       if (draft) {
         setAnswers(draft.answers ?? {});
+        if (!linkCode && draft.code) {
+          setCode(draft.code);
+          setCourse(draft.course ?? null);
+          setCodeState(draft.course ? 'ok' : 'idle');
+        }
         const maxStep = data.definition.sections.length;
         setStep(Math.min(Math.max(INTRO, draft.step ?? INTRO), maxStep));
       }
@@ -139,11 +177,34 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   }, [phase.kind, surveyId, trySend]);
 
   const persist = useCallback(
-    (nextAnswers: Answers, nextStep: number) => {
-      if (def) storage.saveDraft(surveyId, def.version, { answers: nextAnswers, step: nextStep });
+    (nextAnswers: Answers, nextStep: number, nextCode = code, nextCourse = course) => {
+      if (def) storage.saveDraft(surveyId, def.version, { answers: nextAnswers, step: nextStep, code: nextCode, course: nextCourse });
     },
-    [def, surveyId],
+    [def, surveyId, code, course],
   );
+
+  /** Checks the access code before starting (or before resubmitting). Offline, it is checked on submit. */
+  const verifyCode = async (): Promise<boolean> => {
+    if (!def?.accessCodes) return true;
+    const normalized = normalizeCode(code);
+    if (!normalized) {
+      if (def.accessCodes === 'optional') return true;
+      setCodeState('required');
+      return false;
+    }
+    setCodeState('checking');
+    const result = await checkCode(surveyId, normalized);
+    if (result.kind === 'ok') {
+      setCourse(result.course);
+      setCodeState('ok');
+      setCode(formatCode(normalized));
+      persist(answers, step, formatCode(normalized), result.course);
+      return true;
+    }
+    setCourse(null);
+    setCodeState(result.kind);
+    return result.kind === 'offline';
+  };
 
   const onAnswer = useCallback(
     (key: string, value: AnswerValue | undefined) => {
@@ -201,7 +262,19 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       setMissing(new Set(sectionProblems(def, firstBad)));
       return;
     }
-    const outbox: Outbox = { submissionId: newSubmissionId(), surveyVersion: def.version, answers };
+    const normalized = normalizeCode(code);
+    if (def.accessCodes === 'required' && !normalized) {
+      setCodeState('required');
+      setNotice('code');
+      return;
+    }
+    const outbox: Outbox = {
+      submissionId: newSubmissionId(),
+      surveyVersion: def.version,
+      answers,
+      code: normalized || undefined,
+      course,
+    };
     storage.saveOutbox(surveyId, outbox);
     storage.clearDraft(surveyId, def.version);
     void trySend(outbox);
@@ -210,6 +283,9 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const startAnother = () => {
     storage.clearDone(surveyId);
     setAnswers({});
+    setCode('');
+    setCourse(null);
+    setCodeState('idle');
     setStep(INTRO);
     setPhase({ kind: 'form' });
     window.scrollTo({ top: 0 });
@@ -293,6 +369,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         <article className="intro">
           {def.intro.heading && <h1 className="page-title">{def.intro.heading}</h1>}
           <Paragraphs paragraphs={def.intro.paragraphs} />
+          {def.accessCodes && <CodeField t={t} code={code} setCode={setCode} state={codeState} course={course} optional={def.accessCodes === 'optional'} />}
           {def.privacy && (
             <details className="privacy">
               <summary>{def.privacy.heading ?? 'Datenschutz'}</summary>
@@ -300,9 +377,20 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
             </details>
           )}
         </article>
+        <p className="organiser-link">
+          <a href={window.location.pathname.startsWith('/s/') ? `/admin/results/${surveyId}` : '/admin'}>{t.organiser}</a>
+        </p>
         <div className="nav">
           <span />
-          <button className="btn btn-primary" onClick={() => goTo(0)}>{t.start}</button>
+          <button
+            className="btn btn-primary"
+            disabled={codeState === 'checking'}
+            onClick={async () => {
+              if (await verifyCode()) goTo(0);
+            }}
+          >
+            {def.accessCodes && codeState !== 'ok' && normalizeCode(code) ? t.codeStart : t.start}
+          </button>
         </div>
       </Shell>
     );
@@ -314,6 +402,12 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         <Progress current={sections.length} total={sections.length} label={t.reviewTitle} />
         <h1 className="page-title">{t.reviewTitle}</h1>
         {notice === 'changed' && <div className="panel panel-warn" role="alert">{t.changed}</div>}
+        {notice === 'code' && <div className="panel panel-error" role="alert">{t.codeResubmit}</div>}
+        {def.accessCodes && (notice === 'code' || !course) ? (
+          <CodeField t={t} code={code} setCode={setCode} state={codeState} course={course} optional={def.accessCodes === 'optional'} />
+        ) : (
+          course && <p className="course-line">{t.course(course)}</p>
+        )}
         <ol className="review-list">
           {sections.map((s, i) => {
             const fields = fieldsOf(def).filter((f) => f.sectionId === s.id);
@@ -332,7 +426,17 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         <p className="review-final">{t.reviewFinal}</p>
         <div className="nav">
           <button className="btn btn-secondary" onClick={() => goTo(sections.length - 1)}>{t.back}</button>
-          <button className="btn btn-primary" onClick={submit}>{t.submit}</button>
+          <button
+            className="btn btn-primary"
+            disabled={codeState === 'checking'}
+            onClick={async () => {
+              if (notice === 'code' && !(await verifyCode())) return;
+              setNotice(null);
+              submit();
+            }}
+          >
+            {t.submit}
+          </button>
         </div>
       </Shell>
     );
@@ -366,6 +470,56 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         </button>
       </div>
     </Shell>
+  );
+}
+
+function CodeField({
+  t,
+  code,
+  setCode,
+  state,
+  course,
+  optional,
+}: {
+  t: Strings;
+  code: string;
+  setCode: (v: string) => void;
+  state: CodeState;
+  course: string | null;
+  optional: boolean;
+}) {
+  const message =
+    state === 'checking'
+      ? t.codeChecking
+      : state === 'unknown'
+        ? t.codeUnknown
+        : state === 'used'
+          ? t.codeUsed
+          : state === 'required'
+            ? t.codeRequired
+            : state === 'offline'
+              ? t.codeOffline
+              : null;
+  const bad = state === 'unknown' || state === 'used' || state === 'required';
+  return (
+    <div className={`code-field${bad ? ' is-invalid' : ''}`}>
+      <label htmlFor="access-code">{t.codeLabel}{optional ? ` (${t.optional})` : ''}</label>
+      <input
+        id="access-code"
+        className="text-input code-input"
+        value={code}
+        onChange={(e) => setCode(e.target.value.toUpperCase())}
+        autoComplete="off"
+        autoCapitalize="characters"
+        spellCheck={false}
+        inputMode="text"
+        maxLength={12}
+        placeholder="XXXX-XXXX"
+      />
+      <p className="code-hint">{optional ? t.codeOptionalHint : t.codeHint}</p>
+      {state === 'ok' && course && <p className="course-line">{t.course(course)}</p>}
+      {message && <p className={bad ? 'code-error' : 'code-note'} role={bad ? 'alert' : 'status'}>{message}</p>}
+    </div>
   );
 }
 

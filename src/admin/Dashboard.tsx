@@ -20,6 +20,10 @@ interface AppInfo {
   closesAt?: string | null;
   responses?: number;
   subtitle?: string | null;
+  collectRecords: boolean;
+  records: number;
+  accessCodes?: 'required' | 'optional' | null;
+  courses?: number;
 }
 
 interface AppsResponse {
@@ -136,18 +140,22 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
             {!app.enabled && <span className="badge badge-off">gesperrt</span>}
           </div>
         </div>
-        {isSurvey && (
-          <div className="app-count" title="Antworten">
-            <span className="fact-num">{app.responses ?? 0}</span>
-            <span>Antworten</span>
-          </div>
-        )}
+        <div className="app-count" title={isSurvey ? 'Antworten' : 'Datensätze'}>
+          <span className="fact-num">{isSurvey ? (app.responses ?? 0) : app.records}</span>
+          <span>{isSurvey ? 'Antworten' : 'Datensätze'}</span>
+        </div>
       </div>
 
       {isSurvey && (
         <div className="app-status">
           Status: <strong>{STATUS[app.status ?? 'open']}</strong>
           {app.statusOverride ? ' (von Hand gesetzt)' : ''} · Schluss: {formatDate(app.closesAt)} · Version {app.version}
+          {app.accessCodes ? ` · Einmal-Codes (${app.courses ?? 0} Kurse)` : ''}
+        </div>
+      )}
+      {!isSurvey && (
+        <div className="app-status">
+          Datenannahme: <strong>{app.collectRecords ? 'eingeschaltet' : 'ausgeschaltet'}</strong>
         </div>
       )}
 
@@ -196,8 +204,25 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
       )}
 
       <div className="admin-actions">
-        {isSurvey && (
-          <a className="btn btn-primary admin-link" href={`/admin/results/${app.id}`}>Auswertung</a>
+        {isSurvey ? (
+          <>
+            <a className="btn btn-primary admin-link" href={`/admin/results/${app.id}`}>
+              {app.accessCodes ? 'Auswertung, Kurse & Codes' : 'Auswertung'}
+            </a>
+            <a className="btn btn-secondary admin-link" href={`/admin/api/results/${app.id}/export.csv`} download>CSV</a>
+          </>
+        ) : (
+          <>
+            <a className="btn btn-primary admin-link" href={`/admin/records/${app.id}`}>Daten</a>
+            <a className="btn btn-secondary admin-link" href={`/admin/api/records/${app.id}/records.csv`} download>CSV</a>
+            <a className="btn btn-secondary admin-link" href={`/admin/api/records/${app.id}/records.json`} download>JSON</a>
+            <button
+              className="btn btn-secondary"
+              onClick={() => void patch({ collectRecords: !app.collectRecords }, `${app.title}: Datenannahme ${app.collectRecords ? 'ausgeschaltet' : 'eingeschaltet'}.`)}
+            >
+              Datenannahme {app.collectRecords ? 'aus' : 'ein'}
+            </button>
+          </>
         )}
         {isSurvey && app.status !== 'closed' && (
           <button className="btn btn-secondary" onClick={() => void patch({ statusOverride: 'closed' }, `${app.title}: geschlossen.`)}>

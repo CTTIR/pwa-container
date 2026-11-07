@@ -507,3 +507,64 @@ textarea {
     margin-left: 2px;
   }
 }
+
+/* access code */
+.code-field {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-left: var(--rule) solid var(--c-accent);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 16px 0;
+}
+
+.code-field.is-invalid {
+  border-left-color: var(--c-error);
+}
+
+.code-field label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.code-input {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 1.25rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  max-width: 14em;
+}
+
+.code-hint {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--c-muted);
+}
+
+.code-error {
+  margin: 8px 0 0;
+  color: var(--c-error);
+  font-weight: 600;
+}
+
+.code-note {
+  margin: 8px 0 0;
+  color: var(--c-muted);
+}
+
+.course-line {
+  margin: 8px 0;
+  font-weight: 700;
+  color: var(--c-primary);
+}
+
+.organiser-link {
+  margin: 18px 0 0;
+  font-size: 0.85rem;
+  text-align: right;
+}
+
+.organiser-link a {
+  color: var(--c-muted);
+}

@@ -1,5 +1,6 @@
 import { fieldsOf, type AnswerValue, type Field, type SurveyDefinition } from '../shared/schema.ts';
-import type { StoredResponse } from './db.ts';
+import type { StoredRecord, StoredResponse } from './db.ts';
+import { recordsTable } from '../shared/records.ts';
 
 export interface FieldInfo {
   key: string;
@@ -126,7 +127,10 @@ export function cellText(v: AnswerValue | undefined): string {
   return String(v);
 }
 
-function csvField(input: string): string {
+/** Byte order mark so spreadsheet programs detect UTF-8. */
+const BOM = '\uFEFF';
+
+export function csvField(input: string): string {
   // Spreadsheet formula prefixes are neutralised so a free-text answer cannot run as a formula.
   if (/^[\s\u0000-\u001f]*[=+@-]/u.test(input) && !/^-?\d+(\.\d+)?$/.test(input)) input = "'" + input;
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, '""')}"` : input;
@@ -134,10 +138,17 @@ function csvField(input: string): string {
 
 export function buildCsv(def: SurveyDefinition, rows: StoredResponse[]): string {
   const keys = exportKeys(def, rows);
-  const header = ['response', 'survey_version', 'submitted_on', ...keys];
+  const withCourse = def.accessCodes !== undefined || rows.some((r) => r.course);
+  const header = ['response', 'survey_version', 'submitted_on', ...(withCourse ? ['course'] : []), ...keys];
   const lines = [header.map(csvField).join(',')];
   rows.forEach((r, i) => {
-    lines.push([String(i + 1), String(r.surveyVersion), r.submittedOn, ...keys.map((k) => cellText(r.answers[k]))].map(csvField).join(','));
+    const course = withCourse ? [r.course ?? ''] : [];
+    lines.push([String(i + 1), String(r.surveyVersion), r.submittedOn, ...course, ...keys.map((k) => cellText(r.answers[k]))].map(csvField).join(','));
   });
-  return '﻿' + lines.join('\r\n') + '\r\n';
+  return BOM + lines.join('\r\n') + '\r\n';
+}
+
+export function recordsCsv(records: StoredRecord[]): string {
+  const { header, rows } = recordsTable(records);
+  return BOM + [header, ...rows].map((line) => line.map(csvField).join(',')).join('\r\n') + '\r\n';
 }
