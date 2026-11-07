@@ -239,8 +239,9 @@ export class AdminAuth {
    *   growing delay after each failure;
    * - after SOURCE_MAX_FAILURES failures the source cools down (10 s, doubling per further
    *   failure, at most 5 min);
-   * - checks of cooling-down sources, and of every source while more than GLOBAL_ALARM_FAILURES
-   *   failures happened in the last five minutes, go through one narrow lane: one check at a
+   * - checks of cooling-down sources, and of every source with own recent failures while more
+   *   than GLOBAL_ALARM_FAILURES failures happened in the last five minutes, go through one
+   *   narrow lane (sources without failures are never slowed down): one check at a
    *   time and at most one per second overall. Guessing is therefore limited to about one
    *   attempt per second in total, while correct credentials are never refused outright (under
    *   load they may get 'busy' and have to try again).
@@ -250,7 +251,9 @@ export class AdminAuth {
     if (!header || !header.startsWith('Basic ')) return null;
     const now = this.clock();
     const state = this.sourceState(source, now);
-    const slow = state.blockedUntil > now || this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES;
+    // During a broad attack only sources that failed themselves are slowed down; clean sources
+    // (e.g. the real administrators) keep the normal path.
+    const slow = state.blockedUntil > now || (state.failures.length > 0 && this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES);
     const limit = state.key === OVERFLOW_KEY ? OVERFLOW_MAX_CONCURRENT : SOURCE_MAX_CONCURRENT;
     if (state.inFlight >= limit) return 'busy';
     state.inFlight += 1;

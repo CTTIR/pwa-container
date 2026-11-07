@@ -234,6 +234,15 @@ describe('admin authentication', () => {
     expect(waits.some((w) => w > 0 && w <= 1000)).toBe(true);
   });
 
+  it('keeps clean sources on the normal path during a broad attack', async () => {
+    const pauses: number[] = [];
+    const auth = new AdminAuth(credFile, { sleep: async (ms) => void pauses.push(ms) });
+    for (let n = 0; n < 230; n++) await auth.authenticate(wrong, undefined, `10.${Math.floor(n / 250)}.${n % 250}.1`);
+    pauses.length = 0;
+    expect(await auth.authenticate(ADMIN, undefined, '198.51.100.77')).toBe('global');
+    expect(pauses).toEqual([]); // no lane spacing for a clean source
+  }, 60_000);
+
   it('generates long random passwords and refuses short ones', () => {
     const pw = generatePassword();
     expect(pw).toHaveLength(24);
