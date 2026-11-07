@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomInt, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
 
 // Admin access uses HTTP Basic authentication over HTTPS. Passwords are stored as scrypt
 // hashes in a JSON file that is mounted into the container and never committed:
@@ -20,8 +20,18 @@ const R = 8;
 const P = 1;
 const KEYLEN = 32;
 
+export const MIN_PASSWORD_LENGTH = 16;
+const PASSWORD_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+/** A random password of `length` characters (default 24, about 140 bits). */
+export function generatePassword(length = 24): string {
+  let out = '';
+  for (let i = 0; i < length; i++) out += PASSWORD_ALPHABET[randomInt(0, PASSWORD_ALPHABET.length)];
+  return out;
+}
+
 export function hashPassword(password: string): string {
-  if (password.length < 12) throw new Error('password must have at least 12 characters');
+  if (password.length < MIN_PASSWORD_LENGTH) throw new Error(`password must have at least ${MIN_PASSWORD_LENGTH} characters`);
   const salt = randomBytes(16);
   const key = scryptSync(password, salt, KEYLEN, { N, r: R, p: P });
   return ['scrypt', N, R, P, salt.toString('base64'), key.toString('base64')].join('$');
@@ -72,9 +82,15 @@ const BLOCKED_MAX_DELAY_MS = 5 * 60_000;
 const OVERFLOW_KEY = 'overflow';
 /** The shared bucket for sources beyond the table limit gets more room than a single source. */
 const OVERFLOW_MAX_CONCURRENT = 10;
-/** Password checks of cooling-down sources share this one narrow lane (plus a short queue). */
+/**
+ * Password checks of cooling-down sources (and of everybody during a broad attack) share one
+ * narrow lane: one check at a time, at most one per PENALTY_INTERVAL_MS, short queue.
+ */
 const PENALTY_PARALLEL = 1;
 const PENALTY_QUEUE = 4;
+const PENALTY_INTERVAL_MS = 1000;
+/** More failures than this within GLOBAL_WINDOW_MS count as a broad attack. */
+const GLOBAL_ALARM_FAILURES = 200;
 
 interface SourceState {
   failures: number[];
@@ -115,6 +131,7 @@ export class AdminAuth {
   private waiting: (() => void)[] = [];
   private penaltyActive = 0;
   private penaltyWaiting: (() => void)[] = [];
+  private lastPenaltyCheck = 0;
   /**
    * Sign-in attempts per source group. Kept only in memory, only as keyed hashes with a secret
    * that changes on every start, and only for the administration sign-in.
@@ -187,6 +204,9 @@ export class AdminAuth {
     }
     this.penaltyActive += 1;
     try {
+      const wait = this.lastPenaltyCheck + PENALTY_INTERVAL_MS - this.clock();
+      if (wait > 0) await this.sleep(wait);
+      this.lastPenaltyCheck = this.clock();
       return await fn();
     } finally {
       this.penaltyActive -= 1;
@@ -213,29 +233,30 @@ export class AdminAuth {
    * Checks an Authorization header. Global credentials give full access; survey credentials
    * only give access to the results of that one survey.
    *
-   * Brute-force protection per source (IPv4 address or IPv6 /64):
-   * - at most two password checks of a source run at the same time ('busy' otherwise); slots
-   *   are only held while the check runs, never during pauses;
-   * - each failure is answered after a short, growing delay;
+   * Brute-force protection:
+   * - per source (IPv4 address or IPv6 /64; the shared overflow bucket and unknown sources
+   *   included): at most two checks at the same time, slots held only while checking, a short
+   *   growing delay after each failure;
    * - after SOURCE_MAX_FAILURES failures the source cools down (10 s, doubling per further
-   *   failure, at most 5 min). Its checks then go through one narrow lane shared by all
-   *   cooling-down sources: correct credentials still work, wrong ones are answered 'blocked'
-   *   and extend the cooldown. The shared overflow bucket and requests without a known source
-   *   are never put into cooldown.
-   * Long random passwords remain the main protection.
+   *   failure, at most 5 min);
+   * - checks of cooling-down sources, and of every source while more than GLOBAL_ALARM_FAILURES
+   *   failures happened in the last five minutes, go through one narrow lane: one check at a
+   *   time and at most one per second overall. Guessing is therefore limited to about one
+   *   attempt per second in total, while correct credentials are never refused outright (under
+   *   load they may get 'busy' and have to try again).
+   * Long random passwords (see generatePassword) remain the main protection.
    */
   async authenticate(header: string | undefined, surveyId?: string, source = 'unknown'): Promise<AuthResult> {
     if (!header || !header.startsWith('Basic ')) return null;
     const now = this.clock();
     const state = this.sourceState(source, now);
-    const canCool = state.key !== OVERFLOW_KEY && source !== 'unknown';
-    const cooling = canCool && state.blockedUntil > now;
+    const slow = state.blockedUntil > now || this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES;
     const limit = state.key === OVERFLOW_KEY ? OVERFLOW_MAX_CONCURRENT : SOURCE_MAX_CONCURRENT;
     if (state.inFlight >= limit) return 'busy';
     state.inFlight += 1;
     let result: AuthResult;
     try {
-      result = cooling ? await this.withPenaltySlot(() => this.check(header, surveyId)) : await this.check(header, surveyId);
+      result = slow ? await this.withPenaltySlot(() => this.check(header, surveyId)) : await this.check(header, surveyId);
     } finally {
       state.inFlight -= 1;
     }
@@ -244,7 +265,7 @@ export class AdminAuth {
     state.failures.push(failedAt);
     this.failures.push(failedAt);
     const delay = this.delayFor(state, failedAt);
-    if (canCool && state.failures.length >= SOURCE_MAX_FAILURES) {
+    if (state.failures.length >= SOURCE_MAX_FAILURES) {
       state.blockedUntil = failedAt + delay;
       return 'blocked';
     }

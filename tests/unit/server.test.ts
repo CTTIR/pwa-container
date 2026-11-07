@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../../server/app.ts';
-import { AdminAuth, SOURCE_MAX_FAILURES, hashPassword, sourceGroup } from '../../server/auth.ts';
+import { AdminAuth, SOURCE_MAX_FAILURES, generatePassword, hashPassword, sourceGroup } from '../../server/auth.ts';
 import { Store } from '../../server/db.ts';
 import { AppRegistry } from '../../server/registry.ts';
 
@@ -210,10 +210,34 @@ describe('admin authentication', () => {
     expect(auth.delayFor({ failures: Array(SOURCE_MAX_FAILURES + 20).fill(clock) })).toBe(300_000);
   });
 
-  it('never cools down requests without a known source', async () => {
+  it('also cools down requests without a known source, but lets correct credentials through', async () => {
     const auth = new AdminAuth(credFile, noPause);
-    for (let i = 0; i < SOURCE_MAX_FAILURES + 3; i++) expect(await auth.authenticate(wrong)).toBeNull();
+    for (let i = 0; i < SOURCE_MAX_FAILURES - 1; i++) expect(await auth.authenticate(wrong)).toBeNull();
+    expect(await auth.authenticate(wrong)).toBe('blocked');
     expect(await auth.authenticate(ADMIN)).toBe('global');
+  });
+
+  it('spaces checks in the narrow lane to one per second', async () => {
+    let clock = 5_000_000;
+    const waits: number[] = [];
+    const auth = new AdminAuth(credFile, {
+      now: () => clock,
+      sleep: async (ms) => {
+        waits.push(ms);
+        clock += ms;
+      },
+    });
+    for (let i = 0; i < SOURCE_MAX_FAILURES; i++) await auth.authenticate(wrong, undefined, '203.0.113.50');
+    waits.length = 0;
+    await auth.authenticate(wrong, undefined, '203.0.113.50');
+    await auth.authenticate(wrong, undefined, '203.0.113.50');
+    expect(waits.some((w) => w > 0 && w <= 1000)).toBe(true);
+  });
+
+  it('generates long random passwords and refuses short ones', () => {
+    const pw = generatePassword();
+    expect(pw).toHaveLength(24);
+    expect(() => hashPassword('too short pw')).toThrow();
   });
 
   it('limits parallel checks per source but does not hold slots during pauses', async () => {

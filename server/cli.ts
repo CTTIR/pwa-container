@@ -1,10 +1,11 @@
 import fs from 'node:fs';
-import { hashPassword } from './auth.ts';
+import { generatePassword, hashPassword } from './auth.ts';
 import { loadConfig } from './config.ts';
 import { Store } from './db.ts';
 import { validateDefinition } from '../shared/schema.ts';
 
 // Maintenance commands, run inside the container:
+//   node server/cli.ts new-password             (prints a random password and its hash)
 //   node server/cli.ts hash-password            (reads the password from stdin)
 //   node server/cli.ts validate <survey.json>
 //   node server/cli.ts count <surveyId>
@@ -17,6 +18,12 @@ function readStdin(): string {
 }
 
 switch (command) {
+  case 'new-password': {
+    const password = generatePassword();
+    console.log(`password: ${password}`);
+    console.log(`hash:     ${hashPassword(password)}`);
+    break;
+  }
   case 'hash-password': {
     console.log(hashPassword(readStdin()));
     break;
@@ -46,6 +53,6 @@ switch (command) {
     break;
   }
   default:
-    console.error('commands: hash-password | validate <file> | count <surveyId> | purge <surveyId> --yes');
+    console.error('commands: new-password | hash-password | validate <file> | count <surveyId> | purge <surveyId> --yes');
     process.exit(2);
 }

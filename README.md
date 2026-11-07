@@ -121,18 +121,18 @@ Credentials live in a JSON file mounted at `/config/admins.json` and are never s
 }
 ```
 
-Brute-force protection works per client (IPv4 address or IPv6 /64):
-- A client may run two password checks at a time. Slots are held only during the check, never
-  during pauses.
-- Failed attempts are answered after a short, growing delay.
-- After 10 failures within 15 minutes the client cools down: 10 seconds, doubling with every
-  further failure up to 5 minutes.
-  - During the cooldown its password checks go through one narrow lane shared by all
-    cooling-down clients, so guessing stays slow.
-  - Correct credentials still work; wrong ones get HTTP 429 and extend the cooldown.
-- Clients without failures are never affected, and clients with recent failures are never
-  forgotten. If the table of clients is full, new clients share one common bucket. That bucket is
-  never put into cooldown, and neither are requests without a known client address.
+Brute-force protection:
+- **Per client** (IPv4 address or IPv6 /64, including the shared overflow bucket): at most two
+  password checks at a time, and a short, growing delay after each failure.
+- **Cooldown:** after 10 failures within 15 minutes the client cools down (10 seconds, doubling up
+  to 5 minutes).
+- **Narrow lane:** password checks of cooling-down clients, and of everybody while more than 200
+  failures happened in the last five minutes, go through one shared lane. It runs one check at a
+  time and at most one per second in total.
+  - Guessing is therefore limited to about one attempt per second overall.
+  - Correct credentials are never refused outright; under load the answer may be "try again".
+- **Passwords:** at least 16 characters. `node server/cli.ts new-password` prints a random
+  24-character password with its hash.
 
 Client addresses are needed for this, so the server keeps them for this one purpose only. They are
 held only in memory, as keyed hashes whose secret changes on every restart, and they are never
@@ -140,7 +140,9 @@ written to disk or logs. Participant requests are never looked at.
 Behind Traefik set `TRUST_PROXY=1` so the address set by Traefik is used. The server logs a warning
 if requests arrive through a proxy without it.
 
-Create a hash with `printf '%s' 'long password' | docker exec -i pwa-container node server/cli.ts hash-password`.
+Create a random password and its hash with `docker exec pwa-container node server/cli.ts new-password`,
+or hash your own (16 characters or more) with
+`printf '%s' 'long password' | docker exec -i pwa-container node server/cli.ts hash-password`.
 Global users manage everything. Survey (or app) users see only that survey's results, courses and
 codes, or that app's records. They can sign in at `<label>.APP_DOMAIN/admin` or
 `ADMIN_HOST/admin/results/<id>`. The file is re-read on
