@@ -287,6 +287,7 @@ export function Results({ surveyId }: { surveyId: string }) {
           surveyId={surveyId}
           courses={courses}
           minGroup={k}
+          isGlobal={data.role === 'global'}
           onChanged={() => load()}
           onSheet={setSheet}
         />}

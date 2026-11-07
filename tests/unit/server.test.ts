@@ -471,12 +471,20 @@ describe('courses and single-use codes', () => {
       headers: leadWrite,
       body: JSON.stringify({ label: 'Kurs der Kursleitung', eventDate: '2027-02-01', count: 1 }),
     });
-    const { course } = (await created.json()) as { course: { id: string } };
+    const { course, codes: own } = (await created.json()) as { course: { id: string }; codes: string[] };
+    expect((await post(sid(50), own[0])).status).toBe(201);
     const closed = await fetch(results(`courses/${course.id}`), { method: 'PATCH', headers: leadWrite, body: JSON.stringify({ closed: true }) });
     expect(closed.status).toBe(200);
     const status = (await (await fetch(results('summary'), { headers: { Authorization: ADMIN } })).json()) as { survey: { status: string } };
     expect(status.survey.status).toBe('open'); // the survey itself stays open for the other courses
-    expect((await fetch(results(`courses/${course.id}`), { method: 'DELETE', headers: leadWrite })).status).toBe(200);
+    // a small (test) course can be deleted with its answers by the survey administration
+    const before = store.count('coded-survey');
+    const del = await fetch(results(`courses/${course.id}?withResponses=1&confirm=${encodeURIComponent('Kurs der Kursleitung')}`), {
+      method: 'DELETE',
+      headers: leadWrite,
+    });
+    expect(del.status).toBe(200);
+    expect(store.count('coded-survey')).toBe(before - 1);
   });
 
   it('closing the survey expires every code', async () => {
@@ -497,20 +505,20 @@ describe('courses and single-use codes', () => {
     expect((await post(sid(30), extra)).status).toBe(409);
   });
 
-  it('deletes a course with its responses only after typing its name (also the survey administration)', async () => {
+  it('deletes a released course with its responses only after typing its name, and only globally', async () => {
     expect((await fetch(results(`courses/${courseId}`), { method: 'DELETE', headers: adminWrite })).status).toBe(409);
     const leadWrite = { Authorization: CODED_LEAD, ...WRITE };
-    expect((await fetch(results(`courses/${courseId}?withResponses=1&confirm=wrong`), { method: 'DELETE', headers: leadWrite })).status).toBe(400);
+    expect((await fetch(results(`courses/${courseId}?withResponses=1&confirm=wrong`), { method: 'DELETE', headers: adminWrite })).status).toBe(400);
     // another survey's administration cannot
     const foreign = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
       method: 'DELETE',
       headers: { Authorization: LEAD, ...WRITE },
     });
     expect(foreign.status).toBe(403);
-    const ok = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
-      method: 'DELETE',
-      headers: leadWrite,
-    });
+    const confirmed = `courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`;
+    // released, five answers: not for the survey administration (they are the ones evaluated)
+    expect((await fetch(results(confirmed), { method: 'DELETE', headers: leadWrite })).status).toBe(403);
+    const ok = await fetch(results(confirmed), { method: 'DELETE', headers: adminWrite });
     expect(ok.status).toBe(200);
     expect(store.count('coded-survey')).toBe(0);
   });

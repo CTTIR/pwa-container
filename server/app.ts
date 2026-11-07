@@ -862,7 +862,16 @@ export function createApp(deps: AppDeps) {
         }
         if (method === 'DELETE' && parts.length === 6) {
           const withResponses = url.searchParams.get('withResponses') === '1';
-          // Deleting answers is reserved for the global administration (like purging a survey).
+          // The survey's own administration may delete small courses with their answers (test runs,
+          // wrongly created courses). Released courses and courses with MIN_GROUP or more answers
+          // are left to the global administration, so real evaluations cannot be removed by those
+          // they evaluate.
+          if (withResponses && role !== 'global') {
+            const fresh = store.listCourses(def.id).find((c) => c.id === courseId);
+            if (fresh && (fresh.released || fresh.responses >= MIN_GROUP)) {
+              return sendJson(res, 403, { error: 'only the global administration can delete released courses or courses with 5 or more answers' });
+            }
+          }
           if (withResponses && url.searchParams.get('confirm') !== current.label) {
             return sendJson(res, 400, { error: 'confirmation does not match the course name' });
           }

@@ -180,8 +180,10 @@ or hash your own (16 characters or more) with
 `printf '%s' 'long password' | docker exec -i pwa-container node server/cli.ts hash-password`.
 Global users manage everything. Survey (or app) users see only that survey's results, courses,
 codes and single responses (the "Datenbank" section), or that app's records. Survey users may
-delete a course together with its responses (after typing the course name, e.g. a test course);
-purging all responses of a survey is reserved for the global administration. Signed-in
+delete a small course together with its responses (after typing the course name, e.g. a test
+course); released courses and courses with 5 or more responses, and purging all responses of a
+survey, are reserved for the global administration, so those evaluated cannot remove their
+evaluation. Signed-in
 administrators can change their own password on their page; the new hash goes to
 `admin-passwords.json` in the data volume (`PASSWORD_OVERRIDES_FILE`), the credentials file stays
 read-only, and a new hash set there by the operator takes precedence. Survey users sign in at `<label>.APP_DOMAIN/admin` or
