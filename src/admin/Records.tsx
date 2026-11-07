@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { recordsTable } from '../../shared/records.ts';
+import { recordsTable, type RecordRow } from '../../shared/records.ts';
 import { Shell } from '../components/Shell.tsx';
 import { downloadRecordsXlsx } from './exportXlsx.ts';
 import { adminFetch } from './http.ts';
@@ -49,7 +49,7 @@ export function Records({ appId }: { appId: string }) {
   if (!info) return <Shell title="Daten">{error ? <div className="panel panel-error">{error}</div> : <p className="status-text">Wird geladen …</p>}</Shell>;
   const xlsx = () =>
     act(async () => {
-      const r = await adminFetch<{ records: { collection: string; receivedOn: string; data: unknown }[] }>(api(appId, '/records'));
+      const r = await adminFetch<{ records: RecordRow[] }>(api(appId, '/records'));
       await downloadRecordsXlsx(appId, r.records, recordsTable);
     });
 
@@ -78,7 +78,7 @@ export function Records({ appId }: { appId: string }) {
         <button className="btn btn-link" onClick={() => void load()}>Aktualisieren</button>
       </div>
       <p className="admin-note">
-        Gespeichert werden nur der Datensatz, seine Sammlung und der Empfangstag – keine Uhrzeit, keine IP-Adressen; Reihenfolge zufällig.
+        Gespeichert werden nur der Datensatz und seine Sammlung – kein Datum, keine Uhrzeit, keine IP-Adressen; Reihenfolge zufällig.
         Belegt: {(info.bytes / 1024 / 1024).toFixed(1)} von {Math.round(info.limits.maxTotalBytes / 1024 / 1024)} MB; höchstens{' '}
         {info.limits.maxRecords.toLocaleString('de-DE')} Datensätze je App, je Datensatz {Math.round(info.limits.maxRecordBytes / 1024)} KB.
       </p>
@@ -113,14 +113,19 @@ export function Records({ appId }: { appId: string }) {
       <section className="admin-block">
         <h2 className="section-title">Einbindung in die App</h2>
         <p className="admin-note">
-          Die App sendet Datensätze an ihre eigene Adresse. Das Hilfsskript speichert bei fehlender Verbindung zwischen und sendet später nach:
+          Die App sendet Datensätze an ihre eigene Adresse. Das Hilfsskript speichert bei fehlender Verbindung (oder ausgeschalteter
+          Annahme) auf dem Gerät zwischen und sendet später automatisch nach; jeder Datensatz trägt eine zufällige Kennung, damit er auch
+          bei mehrfachem Senden nur einmal gespeichert wird:
         </p>
         <pre className="code-block">{`<script src="/_pwa/records.js"></script>
 <script>
   pwaRecords.submit({ score: 7, answers: ['a', 'b'] }, { collection: 'sessions' });
 </script>`}</pre>
         <p className="admin-note">
-          Ohne Hilfsskript: <code>POST /api/records</code> mit JSON <code>{'{"collection": "sessions", "data": {…}}'}</code> (Antwort 201).
+          Ohne Hilfsskript: <code>POST /api/records</code> mit JSON{' '}
+          <code>{'{"collection": "sessions", "data": {…}, "id": "<zufällige UUID>"}'}</code>. Antwort 201 = gespeichert, 200 = schon
+          vorhanden (ebenfalls Erfolg), 400 = ungültiger Datensatz; bei 403 (Annahme aus), 404, 409 (voll), 429 oder 5xx später erneut
+          senden.
         </p>
       </section>
 

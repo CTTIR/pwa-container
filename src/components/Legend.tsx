@@ -1,4 +1,5 @@
 import type { Scale } from '../../shared/schema.ts';
+import { Inline } from './RichText.tsx';
 
 export function Legend({ scale }: { scale: Scale }) {
   return (
@@ -6,13 +7,13 @@ export function Legend({ scale }: { scale: Scale }) {
       {scale.options.map((o) => (
         <div key={o.value} className="legend-entry">
           <dt>{o.value}</dt>
-          <dd>{o.label}</dd>
+          <dd><Inline text={o.label} /></dd>
         </div>
       ))}
       {scale.notApplicable && (
         <div className="legend-entry">
           <dt>{scale.notApplicable.value}</dt>
-          <dd>{scale.notApplicable.label}</dd>
+          <dd><Inline text={scale.notApplicable.label} /></dd>
         </div>
       )}
     </dl>

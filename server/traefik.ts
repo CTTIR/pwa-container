@@ -20,13 +20,37 @@ export function traefikConfig(config: Config, apps: AppEntry[]): string {
       `      service: pwa-container-apps`,
       `      tls:`,
       `        certResolver: ${t.certResolver}`,
+      `      observability:`,
+      `        accessLogs: false`,
     );
   }
   lines.push('  services:', '    pwa-container-apps:', '      loadBalancer:', '        servers:', `          - url: "${t.serviceUrl}"`);
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Writes the routes as a list of subdomain labels for a host-side renderer, so the container
+ * never writes Traefik configuration itself (safer: it cannot route other hosts).
+ */
+export function createRoutesJsonWriter(file: string, log: (msg: string) => void): (apps: AppEntry[]) => void {
+  let last = '';
+  return (apps) => {
+    const content = JSON.stringify({ labels: apps.map((a) => a.hostLabel).sort() }, null, 2) + '\n';
+    if (content === last) return;
+    try {
+      const tmp = `${file}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, content, { mode: 0o640 });
+      fs.renameSync(tmp, file);
+      last = content;
+      log(`route list updated (${apps.length} app host name(s))`);
+    } catch (err) {
+      log(`could not write route list to ${file}: ${(err as Error).message}`);
+    }
+  };
+}
+
 export function createTraefikWriter(config: Config, log: (msg: string) => void): (apps: AppEntry[]) => void {
+  if (config.routesJsonFile) return createRoutesJsonWriter(config.routesJsonFile, log);
   let last = '';
   return (apps) => {
     if (!config.traefik || !config.appDomain) return;

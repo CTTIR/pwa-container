@@ -1,11 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { compactAnswers, formatCode, validateAnswers } from '../shared/schema.ts';
+import { compactAnswers, formatCode, validateAnswers, type SurveyDefinition } from '../shared/schema.ts';
 import type { AdminAuth } from './auth.ts';
 import type { Store } from './db.ts';
-import { STATIC_LIMITS, type AppEntry, type AppRegistry } from './registry.ts';
-import { buildCsv, csvField, exportKeys, fieldInfos, summarize } from './report.ts';
+import { STATIC_LIMITS, validAppId, type AppEntry, type AppRegistry } from './registry.ts';
+import { buildCsv, csvField, exportKeys, fieldInfos, ratingRows, summarize, textKeys, textsByKey, textsCsv } from './report.ts';
 import { collectColumns, headerFor, rowFor, withinShape } from '../shared/records.ts';
 
 export interface AppDeps {
@@ -30,7 +30,16 @@ const MAX_RECORD = 256 * 1024;
 const MAX_RECORDS_PER_APP = 50_000;
 const MAX_RECORD_BYTES_PER_APP = 25 * 1024 * 1024;
 /** Surveys without their own maxResponses accept at most this many responses. */
-const DEFAULT_MAX_RESPONSES = 20_000;
+const DEFAULT_MAX_RESPONSES = 5_000;
+/** Stored answers per survey are capped in total size as well. */
+const MAX_SURVEY_BYTES = 20 * 1024 * 1024;
+/**
+ * Results are released only for groups of at least this many responses, and only once the
+ * group is closed (course closed, or survey closed for surveys without codes). Smaller or
+ * still-open groups would let organisers single out or watch individual answers.
+ */
+export const MIN_GROUP = 5;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CODES_PER_REQUEST = 1000;
 const COLLECTION = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const SUBMISSION_ID = /^[A-Za-z0-9-]{16,64}$/;
@@ -83,6 +92,30 @@ const STATIC_APP_CSP = [
   "style-src 'self' 'unsafe-inline'",
   "worker-src 'self' blob:",
 ].join('; ');
+// Without own subdomains (path mode) uploaded apps share the administration's origin; the
+// sandbox gives them an opaque origin so they cannot use an administrator's credentials.
+const SANDBOXED_APP_CSP = `${STATIC_APP_CSP}; sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals`;
+
+/** Simple token bucket (not tied to client addresses). */
+class Bucket {
+  private tokens: number;
+  private last = Date.now();
+  private capacity: number;
+  private perMinute: number;
+  constructor(capacity: number, perMinute: number) {
+    this.capacity = capacity;
+    this.perMinute = perMinute;
+    this.tokens = capacity;
+  }
+  take(): boolean {
+    const now = Date.now();
+    this.tokens = Math.min(this.capacity, this.tokens + ((now - this.last) / 60_000) * this.perMinute);
+    this.last = now;
+    if (this.tokens < 1) return false;
+    this.tokens -= 1;
+    return true;
+  }
+}
 
 function securityHeaders(res: ServerResponse, csp = CSP): void {
   res.setHeader('Content-Security-Policy', csp);
@@ -140,8 +173,14 @@ function serveFile(req: IncomingMessage, res: ServerResponse, file: string, cach
     'Cache-Control': cacheControl,
     'Last-Modified': lastModified,
   });
-  if (req.method === 'HEAD') res.end();
-  else fs.createReadStream(file).pipe(res);
+  if (req.method === 'HEAD') {
+    res.end();
+    return true;
+  }
+  const stream = fs.createReadStream(file);
+  // An unreadable file (permissions, removed meanwhile) must not crash the server.
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
   return true;
 }
 
@@ -151,15 +190,20 @@ function readBody(req: IncomingMessage, limit: number): Promise<Buffer | null> {
     const chunks: Buffer[] = [];
     let tooLarge = false;
     req.on('data', (chunk: Buffer) => {
+      if (tooLarge) return;
       size += chunk.length;
       if (size > limit) {
+        // Answer right away and discard the rest instead of buffering it.
         tooLarge = true;
         chunks.length = 0;
-      } else if (!tooLarge) {
+        resolve(null);
+      } else {
         chunks.push(chunk);
       }
     });
-    req.on('end', () => resolve(tooLarge ? null : Buffer.concat(chunks)));
+    req.on('end', () => {
+      if (!tooLarge) resolve(Buffer.concat(chunks));
+    });
     req.on('error', reject);
   });
 }
@@ -180,11 +224,6 @@ async function readJson(req: IncomingMessage, res: ServerResponse, limit: number
     sendJson(res, 400, { error: 'invalid_json' });
     return { ok: false };
   }
-}
-
-function localDate(d: Date): string {
-  // Calendar day only, in the container's time zone (TZ). Times are never stored.
-  return d.toLocaleDateString('sv-SE');
 }
 
 export function createApp(deps: AppDeps) {
@@ -212,14 +251,19 @@ export function createApp(deps: AppDeps) {
     return String(req.headers.host ?? '')
       .trim()
       .toLowerCase()
-      .replace(/:\d+$/, '');
+      .replace(/:\d+$/, '')
+      .replace(/\.+$/, '');
   }
 
-  /** The app addressed by its own subdomain, or null for the administration host. */
+  /**
+   * The app addressed by its own subdomain, null for the administration host, or 'unknown'.
+   * With ADMIN_HOST set, every host that is neither the administration nor an app is unknown.
+   */
   function hostApp(req: IncomingMessage): AppEntry | null | 'unknown' {
     if (!appDomain) return null;
     const host = requestHost(req);
-    if (host === adminHost || !host.endsWith('.' + appDomain)) return null;
+    if (host === adminHost) return null;
+    if (!host.endsWith('.' + appDomain)) return adminHost ? 'unknown' : null;
     const label = host.slice(0, -(appDomain.length + 1));
     if (!label || label.includes('.')) return 'unknown';
     return registry.byHostLabel(label) ?? 'unknown';
@@ -241,7 +285,7 @@ export function createApp(deps: AppDeps) {
     const def = app.survey!.def;
     const body = await readJson(req, res, MAX_BODY);
     if (!body.ok) return;
-    const payload = (body.value ?? {}) as { submissionId?: unknown; answers?: unknown; code?: unknown };
+    const payload = (body.value ?? {}) as { submissionId?: unknown; surveyVersion?: unknown; answers?: unknown; code?: unknown };
     const status = registry.statusOf(app, now());
     if (status !== 'open') {
       sendJson(res, 409, { error: status });
@@ -249,6 +293,16 @@ export function createApp(deps: AppDeps) {
     }
     if (typeof payload.submissionId !== 'string' || !SUBMISSION_ID.test(payload.submissionId)) {
       sendJson(res, 400, { error: 'invalid_submission_id' });
+      return;
+    }
+    // Answers given to another version of the questions must be reviewed by the participant.
+    if (payload.surveyVersion !== undefined && payload.surveyVersion !== def.version) {
+      sendJson(res, 409, { error: 'version_changed', version: def.version });
+      return;
+    }
+    // Surveys without codes are open to anyone with the link: limit the pace per survey.
+    if (!def.accessCodes && !submitBucket(def.id).take()) {
+      sendJson(res, 429, { error: 'busy' });
       return;
     }
     const problems = validateAnswers(def, payload.answers);
@@ -263,8 +317,7 @@ export function createApp(deps: AppDeps) {
       def.version,
       payload.submissionId,
       answers,
-      localDate(now()),
-      def.maxResponses ?? DEFAULT_MAX_RESPONSES,
+      { maxResponses: def.maxResponses ?? DEFAULT_MAX_RESPONSES, maxBytes: MAX_SURVEY_BYTES },
       def.accessCodes,
       code,
     );
@@ -275,20 +328,42 @@ export function createApp(deps: AppDeps) {
         return sendJson(res, 200, { status: result });
       case 'full':
       case 'code_used':
+      case 'course_closed':
         return sendJson(res, 409, { error: result });
+      case 'code_unknown':
+        if (!unknownCodeBucket(def.id).take()) return sendJson(res, 429, { error: 'too_many_attempts' });
+        return sendJson(res, 422, { error: result });
       default:
         return sendJson(res, 422, { error: result });
     }
+  }
+
+  const submitBuckets = new Map<string, Bucket>();
+  function submitBucket(surveyId: string): Bucket {
+    let b = submitBuckets.get(surveyId);
+    if (!b) submitBuckets.set(surveyId, (b = new Bucket(60, 120)));
+    return b;
+  }
+  /** Unknown-code answers per survey are limited, so codes cannot be guessed by trying. */
+  const unknownCodeBuckets = new Map<string, Bucket>();
+  function unknownCodeBucket(surveyId: string): Bucket {
+    let b = unknownCodeBuckets.get(surveyId);
+    if (!b) unknownCodeBuckets.set(surveyId, (b = new Bucket(30, 30)));
+    return b;
   }
 
   async function handleCodeCheck(req: IncomingMessage, res: ServerResponse, app: AppEntry): Promise<void> {
     const body = await readJson(req, res, 1024);
     if (!body.ok) return;
     const code = (body.value as { code?: unknown } | null)?.code;
-    if (typeof code !== 'string' || !app.survey?.def.accessCodes) return sendJson(res, 400, { error: 'invalid' });
+    if (typeof code !== 'string' || code.length > 32 || !app.survey?.def.accessCodes) return sendJson(res, 400, { error: 'invalid' });
+    if (registry.statusOf(app, now()) !== 'open') return sendJson(res, 409, { error: 'closed' });
     const check = store.checkCode(app.id, code);
     if (check.status === 'ok') return sendJson(res, 200, { status: 'ok', course: check.course });
-    sendJson(res, check.status === 'used' ? 409 : 404, { error: check.status === 'used' ? 'code_used' : 'code_unknown' });
+    if (check.status === 'closed') return sendJson(res, 409, { error: 'course_closed' });
+    if (check.status === 'used') return sendJson(res, 409, { error: 'code_used' });
+    if (!unknownCodeBucket(app.id).take()) return sendJson(res, 429, { error: 'too_many_attempts' });
+    sendJson(res, 404, { error: 'code_unknown' });
   }
 
   /** Data records sent by a web app (only when collecting is switched on for that app). */
@@ -296,15 +371,16 @@ export function createApp(deps: AppDeps) {
     if (!store.collectsRecords(app.id)) return sendJson(res, 403, { error: 'records_disabled' });
     const body = await readJson(req, res, MAX_RECORD);
     if (!body.ok) return;
-    const value = body.value as { collection?: unknown; data?: unknown } | null;
+    const value = body.value as { collection?: unknown; data?: unknown; id?: unknown } | null;
     if (value === null || typeof value !== 'object') return sendJson(res, 400, { error: 'record must be a JSON object' });
     const collection = typeof value.collection === 'string' ? value.collection : 'default';
     if (!COLLECTION.test(collection)) return sendJson(res, 400, { error: 'invalid collection name' });
     const data = 'data' in value ? value.data : value;
     if (!withinShape(data)) return sendJson(res, 400, { error: 'record is nested too deeply or has too many values' });
-    const result = store.addRecord(app.id, collection, localDate(now()), JSON.stringify(data), MAX_RECORDS_PER_APP, MAX_RECORD_BYTES_PER_APP);
+    const clientId = typeof value.id === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(value.id) ? value.id : undefined;
+    const result = store.addRecord(app.id, collection, JSON.stringify(data), clientId, MAX_RECORDS_PER_APP, MAX_RECORD_BYTES_PER_APP);
     if (result === 'full') return sendJson(res, 409, { error: 'full' });
-    sendJson(res, 201, { status: 'stored' });
+    sendJson(res, result === 'duplicate' ? 200 : 201, { status: result });
   }
 
   /** Writes a chunk; resolves false when the client went away, so the export stops. */
@@ -455,50 +531,101 @@ export function createApp(deps: AppDeps) {
     };
   }
 
+  /** Which results may be shown: closed groups with at least MIN_GROUP responses. */
+  function releaseView(app: AppEntry, def: SurveyDefinition) {
+    if (def.accessCodes) {
+      const courses = store.listCourses(def.id).map((c) => ({ ...c, released: c.closed && c.responses >= MIN_GROUP }));
+      const releasedCourseIds = courses.filter((c) => c.released).map((c) => c.id);
+      return { courses, releasedCourseIds, released: releasedCourseIds.length > 0 };
+    }
+    const closed = registry.statusOf(app, now()) === 'closed';
+    return { courses: [], releasedCourseIds: [] as string[], released: closed && store.count(def.id) >= MIN_GROUP };
+  }
+
+  /** A survey without codes whose results are released may never accept answers again. */
+  function releasedForGood(app: AppEntry, def: SurveyDefinition): boolean {
+    return !def.accessCodes && registry.statusOf(app, now()) === 'closed' && store.count(def.id) >= MIN_GROUP;
+  }
+
+  function courseProblem(v: { label?: unknown; eventDate?: unknown; eventDateEnd?: unknown }, creating: boolean): string | null {
+    if (creating || v.label !== undefined) {
+      if (typeof v.label !== 'string' || !v.label.trim() || v.label.length > 200) return 'event name required (max. 200 characters)';
+    }
+    if (creating || v.eventDate !== undefined) {
+      if (typeof v.eventDate !== 'string' || !DATE.test(v.eventDate) || Number.isNaN(Date.parse(v.eventDate))) return 'event date required (YYYY-MM-DD)';
+    }
+    if (v.eventDateEnd !== undefined && v.eventDateEnd !== null && v.eventDateEnd !== '') {
+      if (typeof v.eventDateEnd !== 'string' || !DATE.test(v.eventDateEnd) || Number.isNaN(Date.parse(v.eventDateEnd))) return 'end date must be YYYY-MM-DD';
+      if (typeof v.eventDate === 'string' && v.eventDateEnd < v.eventDate) return 'end date before start date';
+    }
+    return null;
+  }
+
   async function handleAdminApi(req: IncomingMessage, res: ServerResponse, parts: string[], method: string): Promise<void> {
     // parts: ['admin', 'api', ...]
     const area = parts[2];
 
     if (area === 'results') {
       const id = parts[3];
-      const app = id ? registry.get(id) : undefined;
-      if (!app || app.type !== 'survey' || !app.survey) {
-        sendText(res, 404, 'Not found');
-        return;
-      }
-      if (!(await authorize(req, res, app.id))) return;
+      if (!id || !validAppId(id)) return sendText(res, 404, 'Not found');
+      // Authenticate before revealing whether the survey exists.
+      if (!(await authorize(req, res, id))) return;
+      const app = registry.get(id);
+      if (!app || app.type !== 'survey' || !app.survey) return sendText(res, 404, 'Not found');
       const def = app.survey.def;
       const url = new URL(req.url ?? '/', 'http://localhost');
       const courseParam = url.searchParams.get('course') || undefined;
       if (courseParam && !store.courseExists(def.id, courseParam)) return sendJson(res, 404, { error: 'unknown course' });
 
+      if (parts[4] === 'status' && parts.length === 5) {
+        // Close or reopen the whole survey. Closing also closes every course: all codes expire.
+        if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
+        if (!sameOriginWrite(req, res)) return;
+        const b = await readJson(req, res, MAX_BODY);
+        if (!b.ok) return;
+        const closed = (b.value as { closed?: unknown } | null)?.closed;
+        if (typeof closed !== 'boolean') return sendJson(res, 400, { error: 'closed must be boolean' });
+        if (!closed && releasedForGood(app, def)) return sendJson(res, 409, { error: 'released_cannot_reopen' });
+        registry.setStatusOverride(def.id, closed ? 'closed' : 'open');
+        const coursesClosed = closed ? store.closeAllCourses(def.id) : 0;
+        log(`survey ${def.id} ${closed ? 'closed' : 'reopened'}`);
+        return sendJson(res, 200, { status: registry.statusOf(registry.get(def.id)!, now()), coursesClosed });
+      }
+
       if (parts[4] === 'courses') {
         // Courses and their single-use access codes (also for the survey's own credentials).
-        if (method === 'GET' && parts.length === 5) return sendJson(res, 200, { courses: store.listCourses(def.id) });
+        if (method === 'GET' && parts.length === 5) return sendJson(res, 200, { courses: releaseView(app, def).courses });
         if (method !== 'GET' && !sameOriginWrite(req, res)) return;
         if (method === 'POST' && parts.length === 5) {
           const b = await readJson(req, res, MAX_BODY);
           if (!b.ok) return;
-          const { label, count } = (b.value ?? {}) as { label?: unknown; count?: unknown };
-          if (typeof label !== 'string' || !label.trim() || label.length > 200) return sendJson(res, 400, { error: 'label required (max. 200 characters)' });
-          if (!Number.isInteger(count) || (count as number) < 1 || (count as number) > MAX_CODES_PER_REQUEST) {
+          const v = (b.value ?? {}) as { label?: unknown; eventDate?: unknown; eventDateEnd?: unknown; count?: unknown };
+          const problem = courseProblem(v, true);
+          if (problem) return sendJson(res, 400, { error: problem });
+          if (!Number.isInteger(v.count) || (v.count as number) < 1 || (v.count as number) > MAX_CODES_PER_REQUEST) {
             return sendJson(res, 400, { error: `count must be 1–${MAX_CODES_PER_REQUEST}` });
           }
-          const courseId = store.createCourse(def.id, label.trim(), localDate(now()));
-          const codes = store.addCodes(def.id, courseId, count as number).map(formatCode);
-          return sendJson(res, 201, { course: { id: courseId, label: label.trim() }, codes });
+          const label = (v.label as string).trim();
+          const eventDateEnd = typeof v.eventDateEnd === 'string' && v.eventDateEnd ? v.eventDateEnd : null;
+          const courseId = store.createCourse(def.id, label, v.eventDate as string, eventDateEnd);
+          const codes = store.addCodes(def.id, courseId, v.count as number).map(formatCode);
+          return sendJson(res, 201, { course: { id: courseId, label, eventDate: v.eventDate, eventDateEnd }, codes });
         }
         const courseId = parts[5];
         if (!courseId || !store.courseExists(def.id, courseId)) return sendJson(res, 404, { error: 'unknown course' });
-        if (method === 'POST' && parts[6] === 'codes') {
+        const current = store.listCourses(def.id).find((c) => c.id === courseId)!;
+        if (method === 'POST' && parts[6] === 'codes' && parts.length === 7) {
           const b = await readJson(req, res, MAX_BODY);
           if (!b.ok) return;
           const count = (b.value as { count?: unknown } | null)?.count;
           if (!Number.isInteger(count) || (count as number) < 1 || (count as number) > MAX_CODES_PER_REQUEST) {
             return sendJson(res, 400, { error: `count must be 1–${MAX_CODES_PER_REQUEST}` });
           }
-          const label = store.listCourses(def.id).find((c) => c.id === courseId)?.label ?? '';
-          return sendJson(res, 201, { course: { id: courseId, label }, codes: store.addCodes(def.id, courseId, count as number).map(formatCode) });
+          const codes = store.addCodes(def.id, courseId, count as number).map(formatCode);
+          return sendJson(res, 201, {
+            course: { id: courseId, label: current.label, eventDate: current.eventDate, eventDateEnd: current.eventDateEnd },
+            codes,
+          });
         }
         if (method === 'GET' && parts[6] === 'codes' && parts.length === 7) {
           return sendJson(res, 200, { codes: store.listCodes(def.id, courseId).map((c) => ({ ...c, code: formatCode(c.code) })) });
@@ -506,10 +633,22 @@ export function createApp(deps: AppDeps) {
         if (method === 'PATCH' && parts.length === 6) {
           const b = await readJson(req, res, MAX_BODY);
           if (!b.ok) return;
-          const label = (b.value as { label?: unknown } | null)?.label;
-          if (typeof label !== 'string' || !label.trim() || label.length > 200) return sendJson(res, 400, { error: 'label required (max. 200 characters)' });
-          store.renameCourse(def.id, courseId, label.trim());
-          return sendJson(res, 200, { status: 'renamed' });
+          const v = (b.value ?? {}) as { label?: unknown; eventDate?: unknown; eventDateEnd?: unknown; closed?: unknown };
+          const problem = courseProblem({ eventDate: current.eventDate, ...v, label: v.label ?? current.label }, false);
+          if (problem) return sendJson(res, 400, { error: problem });
+          if (v.closed !== undefined && typeof v.closed !== 'boolean') return sendJson(res, 400, { error: 'closed must be boolean' });
+          // Release is one-way: reopening a released course would let organisers isolate single
+          // new answers by comparing results before and after.
+          if (v.closed === false && current.closed && current.responses >= MIN_GROUP) {
+            return sendJson(res, 409, { error: 'released_cannot_reopen' });
+          }
+          store.updateCourse(def.id, courseId, {
+            label: typeof v.label === 'string' ? v.label.trim() : undefined,
+            eventDate: typeof v.eventDate === 'string' ? v.eventDate : undefined,
+            eventDateEnd: v.eventDateEnd === undefined ? undefined : typeof v.eventDateEnd === 'string' && v.eventDateEnd ? v.eventDateEnd : null,
+          });
+          if (typeof v.closed === 'boolean') store.setCourseClosed(def.id, courseId, v.closed);
+          return sendJson(res, 200, { course: releaseView(app, def).courses.find((c) => c.id === courseId) });
         }
         if (method === 'POST' && parts[6] === 'revoke' && parts.length === 7) {
           const b = await readJson(req, res, MAX_BODY);
@@ -521,31 +660,58 @@ export function createApp(deps: AppDeps) {
           return sendJson(res, 200, { changed: store.setCodesRevoked(def.id, courseId, codes as string[], revoked) });
         }
         if (method === 'DELETE' && parts.length === 6) {
-          const r = store.deleteCourse(def.id, courseId);
+          const withResponses = url.searchParams.get('withResponses') === '1';
+          if (withResponses && url.searchParams.get('confirm') !== current.label) {
+            return sendJson(res, 400, { error: 'confirmation does not match the course name' });
+          }
+          const r = store.deleteCourse(def.id, courseId, withResponses);
+          if (r === 'removed') log(`course of ${def.id} deleted${withResponses ? ' with its responses' : ''}`);
           return r === 'removed' ? sendJson(res, 200, { status: r }) : sendJson(res, 409, { error: 'the course still has responses' });
         }
         return sendJson(res, 405, { error: 'method_not_allowed' });
       }
 
-      const rows = store.list(def.id, courseParam);
+      if (method !== 'GET' && method !== 'HEAD') return sendJson(res, 405, { error: 'method_not_allowed' });
+      const view = releaseView(app, def);
+      let rows: ReturnType<typeof store.list> = [];
+      let released: boolean;
+      if (courseParam) {
+        released = view.courses.find((c) => c.id === courseParam)?.released ?? false;
+        if (released) rows = store.list(def.id, [courseParam]);
+      } else {
+        released = view.released;
+        if (released) rows = def.accessCodes ? store.list(def.id, view.releasedCourseIds) : store.list(def.id);
+      }
       const suffix = courseParam ? `_${courseParam}` : '';
       switch (parts[4]) {
         case 'summary':
           sendJson(res, 200, {
             survey: { ...appInfo(app), title: def.title, subtitle: def.subtitle ?? null },
             definition: def,
+            minGroup: MIN_GROUP,
+            released,
             responses: rows.length,
             course: courseParam ?? null,
-            courses: store.listCourses(def.id),
+            courses: view.courses,
             fields: fieldInfos(def),
             summary: summarize(def, rows),
           });
           return;
         case 'responses':
-          sendJson(res, 200, { survey: { id: def.id, version: def.version, title: def.title }, keys: exportKeys(def, rows), fields: fieldInfos(def), rows });
+          sendJson(res, 200, {
+            survey: { id: def.id, version: def.version, title: def.title },
+            keys: exportKeys(def),
+            textKeys: textKeys(def),
+            fields: fieldInfos(def),
+            rows: ratingRows(def, rows),
+            texts: textsByKey(def, rows),
+          });
           return;
         case 'export.csv':
-          download(res, `${def.id}${suffix}_responses.csv`, 'text/csv; charset=utf-8', buildCsv(def, rows));
+          download(res, `${def.id}${suffix}_ratings.csv`, 'text/csv; charset=utf-8', buildCsv(def, rows));
+          return;
+        case 'texts.csv':
+          download(res, `${def.id}${suffix}_texts.csv`, 'text/csv; charset=utf-8', textsCsv(def, rows));
           return;
         default:
           sendText(res, 404, 'Not found');
@@ -556,9 +722,10 @@ export function createApp(deps: AppDeps) {
     if (area === 'records') {
       // Data records of any app: overview, downloads, deletion (global or the app's credentials).
       const id = parts[3];
-      const app = id ? registry.get(id) : undefined;
+      if (!id || !validAppId(id)) return sendText(res, 404, 'Not found');
+      if (!(await authorize(req, res, id))) return;
+      const app = registry.get(id);
       if (!app) return sendText(res, 404, 'Not found');
-      if (!(await authorize(req, res, app.id))) return;
       const url = new URL(req.url ?? '/', 'http://localhost');
       const collection = url.searchParams.get('collection') || undefined;
       if (collection && !COLLECTION.test(collection)) return sendJson(res, 400, { error: 'invalid collection name' });
@@ -717,6 +884,7 @@ export function createApp(deps: AppDeps) {
         const v = patch.statusOverride;
         if (v !== null && v !== 'open' && v !== 'closed') return sendJson(res, 400, { error: 'statusOverride must be open, closed or null' });
         if (app.type !== 'survey') return sendJson(res, 400, { error: 'only surveys can be opened or closed' });
+        if (v !== 'closed' && app.survey && releasedForGood(app, app.survey.def)) return sendJson(res, 409, { error: 'released_cannot_reopen' });
         registry.setStatusOverride(app.id, v);
       }
       sendJson(res, 200, appInfo(registry.get(app.id)!));
@@ -748,7 +916,7 @@ export function createApp(deps: AppDeps) {
   }
 
   function serveStaticApp(req: IncomingMessage, res: ServerResponse, app: AppEntry, rest: string): void {
-    securityHeaders(res, STATIC_APP_CSP);
+    securityHeaders(res, appDomain ? STATIC_APP_CSP : SANDBOXED_APP_CSP);
     const root = app.staticDir!;
     const file = safeJoin(root, rest || '/');
     if (file) {
@@ -876,9 +1044,9 @@ export function createApp(deps: AppDeps) {
         if (serveFile(req, res, indexHtml, 'no-cache')) return;
       }
 
-      if (pathname === '/admin.html') return sendText(res, 404, 'Not found');
-
       const file = safeJoin(distDir, pathname);
+      // The admin page is only ever served after authentication (also not via encoded paths).
+      if (file === adminHtml || (file && path.resolve(file) === path.resolve(adminHtml))) return sendText(res, 404, 'Not found');
       if (file) {
         const immutable = pathname.startsWith('/assets/');
         if (serveFile(req, res, file, immutable ? 'public, max-age=31536000, immutable' : 'no-cache')) return;

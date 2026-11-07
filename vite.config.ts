@@ -33,8 +33,13 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest,woff2}'],
         globIgnores: ['admin.html', 'assets/admin-*', 'assets/xlsx-*'],
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/admin/, /^\/api\//, /^\/healthz/, /^\/themes\//],
+        // /a/<id>/ are other web apps served by the container; they must never get the survey shell.
+        navigateFallbackDenylist: [/^\/admin/, /^\/api\//, /^\/healthz/, /^\/themes\//, /^\/a\//],
         cleanupOutdatedCaches: true,
+        // A new version takes over right away (also in open tabs) instead of waiting until every
+        // tab is closed; src/main.tsx defers the page reload so nobody loses the page mid-survey.
+        skipWaiting: true,
+        clientsClaim: true,
         runtimeCaching: [
           {
             urlPattern: ({ url, request }) =>

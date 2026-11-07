@@ -1,5 +1,16 @@
-import { fieldsOf, type AnswerValue, type Field, type SurveyDefinition } from '../shared/schema.ts';
+import { randomInt } from 'node:crypto';
+import { fieldsOf, type AnswerValue, type Answers, type Field, type SurveyDefinition } from '../shared/schema.ts';
 import type { StoredResponse } from './db.ts';
+
+/** Fisher–Yates shuffle with a cryptographic random source. */
+export function shuffled<T>(list: T[]): T[] {
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = randomInt(0, i + 1);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
 
 export interface FieldInfo {
   key: string;
@@ -95,29 +106,48 @@ export function summarize(def: SurveyDefinition, rows: StoredResponse[]): FieldS
         counts: item.options.map((o) => ({ option: o, count: flat.filter((x) => x === o).length })),
       };
     }
+    // Free texts are shuffled per question, so their order cannot be matched with rating rows.
     return {
       kind: 'text',
       key: field.key,
       answered: values.length,
       missing,
-      values: values.map(String),
+      values: shuffled(values.map(String)),
     };
   });
 }
 
-/** Column keys for exports: current fields first, then keys only found in older versions. */
-export function exportKeys(def: SurveyDefinition, rows: StoredResponse[]): string[] {
-  const keys = fieldsOf(def).map((f) => f.key);
-  const known = new Set(keys);
-  for (const r of rows) {
-    for (const k of Object.keys(r.answers)) {
-      if (!known.has(k)) {
-        known.add(k);
-        keys.push(k);
-      }
-    }
+/** Keys of free-text fields; their answers are only ever shown separately from ratings. */
+export function textKeys(def: SurveyDefinition): string[] {
+  return fieldsOf(def)
+    .filter((f) => f.item.type === 'text')
+    .map((f) => f.key);
+}
+
+/** Column keys for rating exports: all current fields except free texts. */
+export function exportKeys(def: SurveyDefinition): string[] {
+  return fieldsOf(def)
+    .filter((f) => f.item.type !== 'text')
+    .map((f) => f.key);
+}
+
+/** Rows without free-text answers (and without keys of older versions, which could be texts). */
+export function ratingRows(def: SurveyDefinition, rows: StoredResponse[]): StoredResponse[] {
+  const keys = exportKeys(def);
+  return rows.map((r) => {
+    const answers: Answers = {};
+    for (const k of keys) if (Object.hasOwn(r.answers, k)) answers[k] = r.answers[k];
+    return { ...r, answers };
+  });
+}
+
+/** Free-text answers per question, each list shuffled independently. */
+export function textsByKey(def: SurveyDefinition, rows: StoredResponse[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const key of textKeys(def)) {
+    out[key] = shuffled(rows.map((r) => r.answers[key]).filter((v): v is string => typeof v === 'string' && v.length > 0));
   }
-  return keys;
+  return out;
 }
 
 export function cellText(v: AnswerValue | undefined): string {
@@ -135,15 +165,26 @@ export function csvField(input: string): string {
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, '""')}"` : input;
 }
 
+/** Ratings as CSV: one row per response, no free texts, no dates. */
 export function buildCsv(def: SurveyDefinition, rows: StoredResponse[]): string {
-  const keys = exportKeys(def, rows);
+  const keys = exportKeys(def);
   const withCourse = def.accessCodes !== undefined || rows.some((r) => r.course);
-  const header = ['response', 'survey_version', 'submitted_on', ...(withCourse ? ['course'] : []), ...keys];
+  const header = ['response', 'survey_version', ...(withCourse ? ['course'] : []), ...keys];
   const lines = [header.map(csvField).join(',')];
   rows.forEach((r, i) => {
     const course = withCourse ? [r.course ?? ''] : [];
-    lines.push([String(i + 1), String(r.surveyVersion), r.submittedOn, ...course, ...keys.map((k) => cellText(r.answers[k]))].map(csvField).join(','));
+    lines.push([String(i + 1), String(r.surveyVersion), ...course, ...keys.map((k) => cellText(r.answers[k]))].map(csvField).join(','));
   });
   return BOM + lines.join('\r\n') + '\r\n';
 }
 
+/** Free texts as CSV: question key, question, text; shuffled per question. */
+export function textsCsv(def: SurveyDefinition, rows: StoredResponse[]): string {
+  const texts = textsByKey(def, rows);
+  const questions = new Map(fieldsOf(def).map((f) => [f.key, f.item.text.replace(/\*\*/g, '')]));
+  const lines = [['question_key', 'question', 'text'].map(csvField).join(',')];
+  for (const [key, values] of Object.entries(texts)) {
+    for (const v of values) lines.push([key, questions.get(key) ?? key, v].map(csvField).join(','));
+  }
+  return BOM + lines.join('\r\n') + '\r\n';
+}

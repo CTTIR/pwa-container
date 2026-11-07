@@ -83,15 +83,26 @@ describe('participant API', () => {
     expect(res.status).toBe(422);
   });
 
-  it('stores only the day, never a time or client details', () => {
+  it('stores no date or time and no client details', () => {
     const [row] = store.list('example-course-feedback');
-    expect(row.submittedOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(Object.keys(row)).toEqual(['surveyVersion', 'submittedOn', 'course', 'answers']);
+    expect(Object.keys(row)).toEqual(['surveyVersion', 'course', 'answers']);
   });
 
-  it('serves the SPA for survey links and hides admin.html', async () => {
+  it('refuses answers given to another version of the questions', async () => {
+    const res = await fetch(`${base}/api/surveys/example-course-feedback/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ submissionId: '99999999-9999-4999-8999-999999999999', surveyVersion: 7, answers }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'version_changed', version: 1 });
+  });
+
+  it('serves the SPA for survey links and never the admin page without sign-in', async () => {
     expect((await fetch(`${base}/s/example-course-feedback`)).status).toBe(200);
     expect((await fetch(`${base}/admin.html`)).status).toBe(404);
+    expect((await fetch(`${base}/admin.html/`)).status).toBe(404);
+    expect((await fetch(`${base}/%61dmin.html`)).status).toBe(404);
   });
 });
 
@@ -115,11 +126,24 @@ describe('administration', () => {
     expect(dash.status).toBe(403);
   });
 
-  it('exports CSV with formula-neutralised text', async () => {
-    const res = await fetch(`${base}/admin/api/results/example-course-feedback/export.csv`, { headers: { Authorization: ADMIN } });
-    const csv = await res.text();
-    expect(csv).toContain('C03_PRE');
-    expect(csv).toContain("'=cmd() and more");
+  it('releases results only for a closed survey with at least five responses, free texts separately', async () => {
+    const summary = async () =>
+      (await (await fetch(`${base}/admin/api/results/example-course-feedback/summary`, { headers: { Authorization: LEAD } })).json()) as {
+        released: boolean;
+        responses: number;
+      };
+    for (let i = 2; i <= 5; i++) expect((await submit(`a${i}aaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`)).status).toBe(201);
+    expect(await summary()).toMatchObject({ released: false, responses: 0 }); // open survey: nothing to watch
+    const close = (closed: boolean) =>
+      fetch(`${base}/admin/api/results/example-course-feedback/status`, { method: 'POST', headers: { Authorization: LEAD, ...WRITE }, body: JSON.stringify({ closed }) });
+    expect((await close(true)).status).toBe(200);
+    expect(await summary()).toMatchObject({ released: true, responses: 5 });
+    const ratings = await (await fetch(`${base}/admin/api/results/example-course-feedback/export.csv`, { headers: { Authorization: ADMIN } })).text();
+    expect(ratings.split('\r\n')[0]).toBe('response,survey_version,C01,C02,C03_PRE,C03_POST,C04');
+    expect(ratings).not.toContain('cmd()');
+    const texts = await (await fetch(`${base}/admin/api/results/example-course-feedback/texts.csv`, { headers: { Authorization: ADMIN } })).text();
+    expect(texts).toContain("'=cmd() and more");
+    expect((await close(false)).status).toBe(409); // released results: reopening is refused for good
   });
 
   it('refuses changes without the admin page header', async () => {
@@ -131,19 +155,14 @@ describe('administration', () => {
     expect(res.status).toBe(403);
   });
 
-  it('closes a survey by hand, which blocks new answers', async () => {
-    const res = await fetch(`${base}/admin/api/apps/example-course-feedback`, {
-      method: 'PATCH',
-      headers: { Authorization: ADMIN, ...WRITE },
-      body: JSON.stringify({ statusOverride: 'closed' }),
-    });
-    expect(res.status).toBe(200);
+  it('keeps a released survey closed, also for the global administration', async () => {
     expect((await submit('33333333-3333-4333-8333-333333333333')).status).toBe(409);
-    await fetch(`${base}/admin/api/apps/example-course-feedback`, {
+    const reopen = await fetch(`${base}/admin/api/apps/example-course-feedback`, {
       method: 'PATCH',
       headers: { Authorization: ADMIN, ...WRITE },
-      body: JSON.stringify({ statusOverride: null }),
+      body: JSON.stringify({ statusOverride: 'open' }),
     });
+    expect(reopen.status).toBe(409);
   });
 
   it('installs an uploaded survey and refuses content changes without a version bump once answered', async () => {
@@ -292,21 +311,24 @@ describe('courses and single-use codes', () => {
     return d;
   };
   const adminWrite = { Authorization: ADMIN, ...WRITE };
+  const results = (rest: string) => `${base}/admin/api/results/coded-survey/${rest}`;
   let codes: string[] = [];
   let courseId = '';
 
-  it('installs a survey that requires codes and creates a course with codes', async () => {
+  it('creates a course with event name, manual date and codes', async () => {
     expect((await fetch(`${base}/admin/api/apps/surveys`, { method: 'POST', headers: adminWrite, body: JSON.stringify(def()) })).status).toBe(201);
-    const res = await fetch(`${base}/admin/api/results/coded-survey/courses`, {
+    expect((await fetch(results('courses'), { method: 'POST', headers: adminWrite, body: JSON.stringify({ label: 'Neuwied', count: 3 }) })).status).toBe(400);
+    const res = await fetch(results('courses'), {
       method: 'POST',
       headers: adminWrite,
-      body: JSON.stringify({ label: 'Neuwied, November 2026', count: 3 }),
+      body: JSON.stringify({ label: 'Instruktorenkurs Neuwied', eventDate: '2026-11-07', eventDateEnd: '2026-11-08', count: 7 }),
     });
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { course: { id: string }; codes: string[] };
+    const body = (await res.json()) as { course: { id: string; eventDate: string; eventDateEnd: string }; codes: string[] };
     courseId = body.course.id;
     codes = body.codes;
-    expect(codes).toHaveLength(3);
+    expect(body.course).toMatchObject({ eventDate: '2026-11-07', eventDateEnd: '2026-11-08' });
+    expect(codes).toHaveLength(7);
     for (const c of codes) expect(c).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
   });
 
@@ -314,50 +336,104 @@ describe('courses and single-use codes', () => {
     fetch(`${base}/api/surveys/coded-survey/responses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ submissionId, answers, code }),
+      body: JSON.stringify({ submissionId, surveyVersion: 1, answers, code }),
     });
+  const sid = (n: number) => `${String(n).padStart(8, '0')}-5555-4555-8555-555555555555`;
 
-  it('checks codes, accepts each once and links the response to the course only', async () => {
+  it('accepts each code once and stores neither the code nor any time with the response', async () => {
     const check = await fetch(`${base}/api/surveys/coded-survey/code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: codes[0].toLowerCase() }),
     });
-    expect(await check.json()).toEqual({ status: 'ok', course: 'Neuwied, November 2026' });
-    expect((await post('55555555-5555-4555-8555-555555555555')).status).toBe(422);
-    expect((await post('55555555-5555-4555-8555-555555555555', 'ZZZZ-ZZZZ')).status).toBe(422);
-    expect((await post('55555555-5555-4555-8555-555555555555', codes[0])).status).toBe(201);
-    expect((await post('55555555-5555-4555-8555-555555555555', codes[0])).status).toBe(200); // retry of the same submission
-    expect((await post('66666666-6666-4666-8666-666666666666', codes[0])).status).toBe(409); // code already used
+    expect(await check.json()).toEqual({ status: 'ok', course: 'Instruktorenkurs Neuwied' });
+    expect((await post(sid(1))).status).toBe(422);
+    expect((await post(sid(1), 'ZZZZ-ZZZZ')).status).toBe(422);
+    expect((await post(sid(1), codes[0])).status).toBe(201);
+    expect((await post(sid(1), codes[0])).status).toBe(200); // retry of the same submission
+    expect((await post(sid(2), codes[0])).status).toBe(409); // code already used
     const [row] = store.list('coded-survey');
-    expect(row.course).toBe('Neuwied, November 2026');
-    expect(JSON.stringify(row)).not.toContain(codes[0].replace('-', ''));
+    expect(row).toEqual({ surveyVersion: 1, course: 'Instruktorenkurs Neuwied', answers: expect.any(Object) });
+    const all = JSON.stringify(store.list('coded-survey'));
+    for (const c of codes) expect(all).not.toContain(c.replace('-', ''));
   });
 
-  it('lists, blocks and unblocks codes, renames the course and filters exports by course', async () => {
-    const list = (await (await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}/codes`, { headers: { Authorization: ADMIN } })).json()) as {
-      codes: { code: string; used: boolean; revoked: boolean }[];
+  it('never reveals which single code was used', async () => {
+    const list = (await (await fetch(results(`courses/${courseId}/codes`), { headers: { Authorization: ADMIN } })).json()) as {
+      codes: Record<string, unknown>[];
     };
-    expect(list.codes.filter((c) => c.used)).toHaveLength(1);
-    await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}/revoke`, {
+    expect(list.codes).toHaveLength(7);
+    for (const c of list.codes) expect(Object.keys(c).sort()).toEqual(['code', 'revoked']);
+  });
+
+  it('blocks and unblocks codes', async () => {
+    const revoke = (revoked: boolean) =>
+      fetch(results(`courses/${courseId}/revoke`), { method: 'POST', headers: adminWrite, body: JSON.stringify({ codes: [codes[1]], revoked }) });
+    await revoke(true);
+    expect((await post(sid(3), codes[1])).status).toBe(422);
+    await revoke(false);
+    expect((await post(sid(3), codes[1])).status).toBe(201);
+  });
+
+  it('releases a course only when it is closed and has at least five responses', async () => {
+    const summary = async () =>
+      (await (await fetch(results(`summary?course=${courseId}`), { headers: { Authorization: ADMIN } })).json()) as { released: boolean; responses: number };
+    for (let i = 2; i <= 4; i++) expect((await post(sid(10 + i), codes[i])).status).toBe(201);
+    expect(await summary()).toMatchObject({ released: false, responses: 0 }); // 5 answers, but still open
+    await fetch(results(`courses/${courseId}`), { method: 'PATCH', headers: adminWrite, body: JSON.stringify({ closed: true }) });
+    expect((await post(sid(20), codes[5])).status).toBe(409); // closed course: codes expired
+    expect(await summary()).toMatchObject({ released: true, responses: 5 });
+    const csv = await (await fetch(results(`export.csv?course=${courseId}`), { headers: { Authorization: ADMIN } })).text();
+    expect(csv.split('\r\n')[0]).toBe('response,survey_version,course,C01,C02,C03_PRE,C03_POST,C04');
+    expect(csv.trim().split('\r\n')).toHaveLength(6);
+  });
+
+  it('refuses to reopen a released course', async () => {
+    const r = await fetch(results(`courses/${courseId}`), { method: 'PATCH', headers: adminWrite, body: JSON.stringify({ closed: false }) });
+    expect(r.status).toBe(409);
+  });
+
+  it('closing the survey expires every code', async () => {
+    const second = await fetch(results('courses'), {
       method: 'POST',
       headers: adminWrite,
-      body: JSON.stringify({ codes: [codes[1]], revoked: true }),
+      body: JSON.stringify({ label: 'Zweiter Kurs', eventDate: '2027-03-01', count: 1 }),
     });
-    expect((await post('77777777-7777-4777-8777-777777777777', codes[1])).status).toBe(422);
-    await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}/revoke`, {
+    const extra = ((await second.json()) as { codes: string[] }).codes[0];
+    const res = await fetch(results('status'), { method: 'POST', headers: adminWrite, body: JSON.stringify({ closed: true }) });
+    expect(((await res.json()) as { coursesClosed: number }).coursesClosed).toBe(1);
+    const check = await fetch(`${base}/api/surveys/coded-survey/code`, {
       method: 'POST',
-      headers: adminWrite,
-      body: JSON.stringify({ codes: [codes[1]], revoked: false }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: extra }),
     });
-    expect((await post('77777777-7777-4777-8777-777777777777', codes[1])).status).toBe(201);
-    await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}`, { method: 'PATCH', headers: adminWrite, body: JSON.stringify({ label: 'Neuwied 11/2026' }) });
-    const csv = await (await fetch(`${base}/admin/api/results/coded-survey/export.csv?course=${courseId}`, { headers: { Authorization: ADMIN } })).text();
-    expect(csv.split('\r\n')[0]).toContain('course');
-    expect(csv).toContain('Neuwied 11/2026');
-    expect(csv.trim().split('\r\n')).toHaveLength(3);
-    const del = await fetch(`${base}/admin/api/results/coded-survey/courses/${courseId}`, { method: 'DELETE', headers: adminWrite });
-    expect(del.status).toBe(409); // responses still belong to the course
+    expect(check.status).toBe(409);
+    expect((await post(sid(30), extra)).status).toBe(409);
+  });
+
+  it('deletes a course with its responses only after typing its name', async () => {
+    expect((await fetch(results(`courses/${courseId}`), { method: 'DELETE', headers: adminWrite })).status).toBe(409);
+    expect((await fetch(results(`courses/${courseId}?withResponses=1&confirm=wrong`), { method: 'DELETE', headers: adminWrite })).status).toBe(400);
+    const ok = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
+      method: 'DELETE',
+      headers: adminWrite,
+    });
+    expect(ok.status).toBe(200);
+    expect(store.count('coded-survey')).toBe(0);
+  });
+
+  it('limits answers about unknown codes, so codes cannot be found by guessing', async () => {
+    await fetch(results('status'), { method: 'POST', headers: adminWrite, body: JSON.stringify({ closed: false }) });
+    let limited = false;
+    for (let i = 0; i < 40 && !limited; i++) {
+      const r = await fetch(`${base}/api/surveys/coded-survey/code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: `ZZZZ-ZZ${String.fromCharCode(65 + (i % 26))}${i % 10 === 0 ? 'Z' : 'Y'}` }),
+      });
+      if (r.status === 429) limited = true;
+    }
+    expect(limited).toBe(true);
   });
 });
 
@@ -385,7 +461,7 @@ describe('records of web apps', () => {
     expect(info.total).toBe(2);
     expect(info.collections).toEqual([{ collection: 'sessions', records: 2 }]);
     const csv = await (await fetch(`${base}/admin/api/records/demo-app/records.csv?collection=sessions`, { headers: { Authorization: ADMIN } })).text();
-    expect(csv.split('\r\n')[0]).toBe('record,collection,received_on,score,nested.x,list');
+    expect(csv.split('\r\n')[0]).toBe('record,collection,score,nested.x,list');
     const json = (await (await fetch(`${base}/admin/api/records/demo-app/records.json`, { headers: { Authorization: ADMIN } })).json()) as { records: unknown[] };
     expect(json.records).toHaveLength(2);
     const del = await fetch(`${base}/admin/api/records/demo-app?confirm=demo-app`, { method: 'DELETE', headers: auth });

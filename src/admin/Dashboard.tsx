@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { validateDefinition } from '../../shared/schema.ts';
 import { Shell } from '../components/Shell.tsx';
 import { adminFetch } from './http.ts';
+import { confirmSurveyStatus, reopenBlocked, setSurveyClosed } from './surveyStatus.ts';
 
 interface AppInfo {
   id: string;
@@ -63,11 +64,11 @@ export function Dashboard() {
     void load();
   }, []);
 
-  const act = async (fn: () => Promise<unknown>, done: string) => {
+  const act = async <T,>(fn: () => Promise<T>, done: string | ((result: T) => string)) => {
     setMessage(null);
     try {
-      await fn();
-      setMessage(done);
+      const result = await fn();
+      setMessage(typeof done === 'function' ? done(result) : done);
       setError(null);
     } catch (err) {
       setError((err as Error).message);
@@ -110,7 +111,7 @@ export function Dashboard() {
   );
 }
 
-type Act = (fn: () => Promise<unknown>, done: string) => Promise<void>;
+type Act = <T>(fn: () => Promise<T>, done: string | ((result: T) => string)) => Promise<void>;
 
 function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: string | null }) {
   const [qr, setQr] = useState<string | null>(null);
@@ -128,6 +129,18 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
   };
 
   const isSurvey = app.type === 'survey';
+  /** Without access codes, closing is final once the survey has 5 or more responses. */
+  const final = isSurvey && reopenBlocked(!!app.accessCodes, app.responses ?? 0);
+  const setStatus = (close: boolean) => {
+    if (!confirmSurveyStatus(app.title, close, !!app.accessCodes, final)) return;
+    void act(
+      () => setSurveyClosed(app.id, close),
+      (r) =>
+        close
+          ? `${app.title}: geschlossen${r.coursesClosed ? `, ${r.coursesClosed} ${r.coursesClosed === 1 ? 'Kurs' : 'Kurse'} abgeschlossen` : ''}.`
+          : `${app.title}: wieder geöffnet${app.accessCodes ? ' (Kurse bleiben abgeschlossen, bis sie einzeln wieder geöffnet werden)' : ''}.`,
+    );
+  };
   return (
     <section className={`item-card app-card${app.enabled ? '' : ' is-disabled'}`}>
       <div className="app-head">
@@ -149,7 +162,9 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
       {isSurvey && (
         <div className="app-status">
           Status: <strong>{STATUS[app.status ?? 'open']}</strong>
-          {app.statusOverride ? ' (von Hand gesetzt)' : ''} · Schluss: {formatDate(app.closesAt)} · Version {app.version}
+          {app.statusOverride ? ' (von Hand gesetzt)' : ''}
+          {app.status === 'closed' && final ? ' (endgültig, Ergebnisse freigegeben)' : ''} · Schluss: {formatDate(app.closesAt)} · Version{' '}
+          {app.version}
           {app.accessCodes ? ` · Einmal-Codes (${app.courses ?? 0} Kurse)` : ''}
         </div>
       )}
@@ -177,6 +192,13 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
             className="btn btn-secondary"
             disabled={label === app.hostLabel}
             onClick={() => {
+              const ok = window.confirm(
+                `Adresse von „${app.title}“ ändern?\n\nNeu: ${label}.${appDomain}\nBisher: ${app.hostLabel}.${appDomain}\n\n` +
+                  'Der bisherige Link und alle bereits gedruckten QR-Codes' +
+                  (isSurvey && app.accessCodes ? ' (auch alle Einmal-Code-Zettel)' : '') +
+                  ' funktionieren danach nicht mehr.',
+              );
+              if (!ok) return;
               setQr(null);
               void patch({ hostLabel: label }, `${app.title}: neue Adresse ${label}.${appDomain}.`);
             }}
@@ -186,7 +208,13 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
           <button
             className="btn btn-link"
             onClick={() => {
-              if (window.confirm('Zufällige neue Subdomain vergeben? Der bisherige Link und QR-Code funktionieren danach nicht mehr.')) {
+              if (
+                window.confirm(
+                  'Zufällige neue Subdomain vergeben?\n\nDer bisherige Link und alle bereits gedruckten QR-Codes' +
+                    (isSurvey && app.accessCodes ? ' (auch alle Einmal-Code-Zettel)' : '') +
+                    ' funktionieren danach nicht mehr.',
+                )
+              ) {
                 setQr(null);
                 void patch({ randomHost: true }, `${app.title}: neue zufällige Adresse vergeben.`);
               }
@@ -225,16 +253,16 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
           </>
         )}
         {isSurvey && app.status !== 'closed' && (
-          <button className="btn btn-secondary" onClick={() => void patch({ statusOverride: 'closed' }, `${app.title}: geschlossen.`)}>
-            Schließen
+          <button className="btn btn-secondary" onClick={() => setStatus(true)}>
+            Umfrage schließen
           </button>
         )}
-        {isSurvey && app.status === 'closed' && (
-          <button className="btn btn-secondary" onClick={() => void patch({ statusOverride: 'open' }, `${app.title}: geöffnet.`)}>
-            Öffnen
+        {isSurvey && app.status === 'closed' && !final && (
+          <button className="btn btn-secondary" onClick={() => setStatus(false)}>
+            Umfrage öffnen
           </button>
         )}
-        {isSurvey && app.statusOverride && (
+        {isSurvey && app.statusOverride && !(app.status === 'closed' && final) && (
           <button className="btn btn-link" onClick={() => void patch({ statusOverride: null }, `${app.title}: Zeitplan aus der Definition gilt wieder.`)}>
             Zeitplan der Definition
           </button>

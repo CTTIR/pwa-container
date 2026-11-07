@@ -185,15 +185,20 @@ export class AdminAuth {
     return Math.min(600 + 300 * f + 10 * this.recentGlobalFailures(now), MAX_DELAY_MS);
   }
 
-  private sourceState(address: string, now: number): SourceState & { key: string } {
+  private ownKey(address: string): string {
+    return createHmac('sha256', this.sourceSecret).update(sourceGroup(address)).digest('base64url');
+  }
+
+  private sourceState(address: string, now: number, trusted = false): SourceState & { key: string } {
     const prune = (st: SourceState) => {
       st.failures = st.failures.filter((t) => now - t < SOURCE_WINDOW_MS);
       return st;
     };
-    let key = createHmac('sha256', this.sourceSecret).update(sourceGroup(address)).digest('base64url');
+    let key = this.ownKey(address);
     const existing = this.sources.get(key);
     if (existing) return Object.assign(prune(existing), { key });
-    if (this.sources.size >= this.maxSources) {
+    // Known administrators always get their own entry, even when the table is full.
+    if (this.sources.size >= this.maxSources && !trusted) {
       // Only forget sources with nothing to remember; never evict a source with recent failures.
       for (const [k, v] of this.sources) {
         if (k !== OVERFLOW_KEY && v.inFlight === 0 && v.blockedUntil <= now && prune(v).failures.length === 0) this.sources.delete(k);
@@ -245,12 +250,12 @@ export class AdminAuth {
   async authenticate(header: string | undefined, surveyId?: string, source = 'unknown'): Promise<AuthResult> {
     if (!header || !header.startsWith('Basic ')) return null;
     const now = this.clock();
-    const state = this.sourceState(source, now);
+    const trusted = (this.trusted.get(this.ownKey(source)) ?? 0) > now;
+    const state = this.sourceState(source, now, trusted);
     // Sources with failures of their own (or in cooldown) use the penalty lane. During a broad
     // attack, clean sources that have not signed in successfully before use a separate lane,
     // so failing attackers cannot fill it; known administrators keep the normal path.
     const attack = this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES;
-    const trusted = (this.trusted.get(state.key) ?? 0) > now;
     const lane =
       state.blockedUntil > now || (attack && state.failures.length > 0)
         ? this.penaltyLane

@@ -88,6 +88,7 @@ export class AppRegistry {
   private appsDir: string;
   private log: (msg: string) => void;
   private reserved: Set<string>;
+  private previous = new Map<string, AppEntry>();
   private onChange?: (apps: AppEntry[]) => void;
   /** Problems found while loading, shown on the admin dashboard. */
   problems: string[] = [];
@@ -109,6 +110,9 @@ export class AppRegistry {
   }
 
   reload(): void {
+    // Keep the previous entries: a survey whose file became invalid keeps being served with
+    // its last good definition (and its route) instead of disappearing mid-course.
+    this.previous = new Map(this.apps);
     this.apps.clear();
     this.problems = [];
     // Provisioned surveys first; they win over uploads with the same id.
@@ -182,15 +186,26 @@ export class AppRegistry {
     };
   }
 
+  /** Keeps serving the last good version of a survey whose new file was refused. */
+  private keepPrevious(folder: string, reason: string): void {
+    const prev = this.previous.get(folder);
+    if (prev && prev.type === 'survey') {
+      this.apps.set(folder, prev);
+      this.note(`${folder}: new definition refused (${reason}); still serving version ${prev.survey?.def.version}`);
+    } else {
+      this.note(`skipping ${folder}: ${reason}`);
+    }
+  }
+
   private addSurvey(folder: string, file: string, source: AppSource): void {
     const loaded = readSurveyFile(file);
     if (!loaded.def || !loaded.json) {
-      this.note(`skipping ${folder}: ${loaded.error}`);
+      this.keepPrevious(folder, loaded.error ?? 'invalid');
       return;
     }
     const def = loaded.def;
     if (def.id !== folder) {
-      this.note(`skipping ${folder}: folder name must equal the survey id (${def.id})`);
+      this.keepPrevious(folder, `folder name must equal the survey id (${def.id})`);
       return;
     }
     if (!validAppId(def.id)) {
@@ -198,7 +213,7 @@ export class AppRegistry {
       return;
     }
     if (!this.store.registerVersion(def.id, def.version, hashJson(loaded.json))) {
-      this.note(`skipping ${def.id}: content changed but version ${def.version} already has responses; increase "version"`);
+      this.keepPrevious(def.id, `content changed but version ${def.version} already has responses; increase "version"`);
       return;
     }
     const row = this.store.getApp(def.id);
@@ -300,6 +315,7 @@ export class AppRegistry {
   }
 
   putStaticFile(id: string, relPath: string, body: Buffer): string | null {
+    if (!validAppId(id)) return 'invalid or reserved id';
     const staging = path.join(this.appsDir, id, 'staging');
     if (!fs.existsSync(staging)) return 'upload not started';
     const segments = relPath.split('/').filter(Boolean);
@@ -319,6 +335,7 @@ export class AppRegistry {
   }
 
   publishStatic(id: string): string | null {
+    if (!validAppId(id)) return 'invalid or reserved id';
     const dir = path.join(this.appsDir, id);
     const staging = path.join(dir, 'staging');
     if (!fs.existsSync(path.join(staging, 'index.html'))) return 'the uploaded folder has no index.html at its top level';

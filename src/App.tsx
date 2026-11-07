@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { SurveyApp } from './SurveyApp.tsx';
 import { Shell } from './components/Shell.tsx';
+import { timeoutSignal } from './api.ts';
 import { browserStrings } from './i18n.ts';
 
 const CONTEXT_KEY = 'pwa-container:context';
@@ -12,7 +13,8 @@ function useSurveyId(): string | null | undefined {
   useEffect(() => {
     if (match) return;
     let cancelled = false;
-    fetch('/api/context', { headers: { Accept: 'application/json' } })
+    // A hanging connection counts as offline after 15 s, like the survey definition.
+    fetch('/api/context', { headers: { Accept: 'application/json' }, signal: timeoutSignal(15_000) })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((body: { app: { id: string; type: string } | null }) => {
         const next = body.app?.type === 'survey' ? body.app.id : null;

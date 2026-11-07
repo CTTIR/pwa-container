@@ -1,3 +1,21 @@
+/** Server error codes the admin pages explain in plain German. */
+const MESSAGES: Record<string, string> = {
+  released_cannot_reopen:
+    'Die Ergebnisse sind bereits freigegeben (mindestens 5 Antworten). Das Abschließen ist damit endgültig; ' +
+    'wieder öffnen ist nicht möglich.',
+};
+
+/** Error of an admin request: `message` is readable text, `code` the server's error code (if any). */
+export class AdminError extends Error {
+  readonly code: string | null;
+  readonly status: number;
+  constructor(message: string, code: string | null, status: number) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}
+
 /** Fetch helper for the admin pages: JSON in/out plus the header the server requires for changes. */
 export async function adminFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
@@ -12,8 +30,8 @@ export async function adminFetch<T>(url: string, init: RequestInit = {}): Promis
     body = text;
   }
   if (!res.ok) {
-    const msg = typeof body === 'object' && body && 'error' in body ? String((body as { error: unknown }).error) : `HTTP ${res.status}`;
-    throw new Error(msg);
+    const code = typeof body === 'object' && body && 'error' in body ? String((body as { error: unknown }).error) : null;
+    throw new AdminError(code ? (MESSAGES[code] ?? code) : `HTTP ${res.status}`, code, res.status);
   }
   return body as T;
 }

@@ -10,6 +10,11 @@ export function Inline({ text }: { text: string }) {
   );
 }
 
+/** The same text without the **emphasis** markers, for aria-label and title attributes. */
+export function stripMarkers(text: string): string {
+  return text.split('**').join('');
+}
+
 export function Paragraphs({ paragraphs, className }: { paragraphs: string[]; className?: string }) {
   return (
     <>

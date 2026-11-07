@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   fieldProblem,
   fieldsOf,
@@ -9,7 +9,7 @@ import {
   type Answers,
   type SurveyDefinition,
 } from '../shared/schema.ts';
-import { checkCode, loadSurvey, submitAnswers, type SurveyResponse } from './api.ts';
+import { checkCode, loadSurvey, submitAnswers, type SubmitResult, type SurveyResponse } from './api.ts';
 import { ItemCard } from './components/ItemCard.tsx';
 import { Legend } from './components/Legend.tsx';
 import { Inline, Paragraphs } from './components/RichText.tsx';
@@ -30,6 +30,10 @@ type Phase =
   | { kind: 'thanks' };
 
 const INTRO = -1;
+/** Any step past the last section shows the review page. */
+const REVIEW = 9999;
+/** Id of the heading that receives focus after Weiter / Zurück and other page changes. */
+const HEADING_ID = 'page-heading';
 
 /** A code handed over in the link (#code=XXXX-XXXX) is taken once and removed from the address bar. */
 function codeFromLink(): string | null {
@@ -44,126 +48,356 @@ function codeFromLink(): string | null {
 }
 const linkCode = codeFromLink();
 
-type CodeState = 'idle' | 'checking' | 'ok' | 'unknown' | 'used' | 'offline' | 'required';
-/** Any step past the last section shows the review page. */
-const REVIEW = 9999;
+type CodeState = 'idle' | 'checking' | 'ok' | 'unknown' | 'used' | 'offline' | 'required' | 'course_closed' | 'busy';
+type Notice = 'changed' | 'code' | null;
+
+/** Keeps the answers whose key still exists and whose value still fits the definition. */
+function migrateAnswers(def: SurveyDefinition, answers: Answers): Answers {
+  const out: Answers = {};
+  for (const field of fieldsOf(def)) {
+    const value = answers[field.key];
+    if (isAnswered(value) && fieldProblem(def, field, value) === null) out[field.key] = value;
+  }
+  return out;
+}
+
+function sectionProblems(def: SurveyDefinition, index: number, answers: Answers): string[] {
+  return fieldsOf(def)
+    .filter((f) => f.sectionId === def.sections[index].id)
+    .filter((f) => fieldProblem(def, f, answers[f.key]) !== null)
+    .map((f) => f.key);
+}
 
 export function SurveyApp({ surveyId }: { surveyId: string }) {
   const [survey, setSurvey] = useState<SurveyResponse | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
-  const [answers, setAnswers] = useState<Answers>({});
-  const [step, setStep] = useState(INTRO);
+  const [answers, setAnswersState] = useState<Answers>({});
+  const [step, setStepState] = useState(INTRO);
   const [missing, setMissing] = useState<Set<string>>(new Set());
-  const [notice, setNotice] = useState<string | null>(null);
-  const [code, setCode] = useState(linkCode ?? '');
-  const [course, setCourse] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [code, setCodeValue] = useState(linkCode ?? '');
+  const [course, setCourseValue] = useState<string | null>(null);
   const [codeState, setCodeState] = useState<CodeState>('idle');
+  /** Unsent answers are kept on the device although the survey cannot take them now. */
+  const [keptAnswers, setKeptAnswers] = useState(false);
+
+  // Latest values, updated together with the state, so async handlers (code check, submit,
+  // retries) never write a draft from a stale render.
+  const live = useRef({
+    def: null as SurveyDefinition | null,
+    answers: {} as Answers,
+    step: INTRO,
+    code: linkCode ?? '',
+    course: null as string | null,
+  });
+  /** The pending submission, also kept here so retries work when localStorage is blocked. */
+  const outboxRef = useRef<Outbox | null>(null);
   const sendingRef = useRef(false);
+  /** A code from a scanned link that has not been used for a participation yet. */
+  const pendingLinkCode = useRef<string | null>(linkCode);
+  const focusHeading = useRef(false);
 
   const def = survey?.definition;
   const t: Strings = def ? stringsFor(def.locale) : browserStrings();
 
-  const trySend = useCallback(
-    async (outbox: Outbox) => {
-      if (sendingRef.current) return;
-      sendingRef.current = true;
-      setPhase({ kind: 'sending' });
-      const result = await submitAnswers(surveyId, outbox.submissionId, outbox.surveyVersion, outbox.answers, outbox.code);
-      sendingRef.current = false;
-      switch (result.kind) {
-        case 'stored':
-          // The submission id is removed together with the outbox, so nothing on the device
-          // links it to the stored response.
-          storage.clearOutbox(surveyId);
-          storage.markDone(surveyId);
-          setPhase({ kind: 'thanks' });
-          break;
-        case 'offline':
-          setPhase({ kind: 'pending' });
-          break;
-        case 'closed':
-        case 'not_yet_open':
-        case 'full':
-          storage.clearOutbox(surveyId);
-          setPhase({ kind: 'unavailable', reason: result.kind });
-          break;
-        case 'code_unknown':
-        case 'code_used':
-        case 'code_required':
-          // Answers stay; the participant enters another code on the review page.
-          storage.clearOutbox(surveyId);
-          setAnswers(outbox.answers);
-          setCode(outbox.code ?? '');
-          setCourse(null);
-          setCodeState(result.kind === 'code_used' ? 'used' : result.kind === 'code_required' ? 'required' : 'unknown');
-          setStep(REVIEW);
-          setNotice('code');
-          setPhase({ kind: 'form' });
-          break;
-        case 'invalid':
-          // The definition changed since the answers were given: put them back for review.
-          storage.clearOutbox(surveyId);
-          setAnswers(outbox.answers);
-          setStep(REVIEW);
-          setNotice('changed');
-          setPhase({ kind: 'form' });
-          break;
-        default:
-          setPhase({ kind: 'rejected' });
-      }
-    },
-    [surveyId],
-  );
+  const setAnswers = (a: Answers) => {
+    live.current.answers = a;
+    setAnswersState(a);
+  };
+  const setStep = (s: number) => {
+    live.current.step = s;
+    setStepState(s);
+  };
+  const setCode = (c: string) => {
+    live.current.code = c;
+    setCodeValue(c);
+  };
+  const setCourse = (c: string | null) => {
+    live.current.course = c;
+    setCourseValue(c);
+  };
+  const adoptDefinition = (data: SurveyResponse) => {
+    live.current.def = data.definition;
+    document.title = data.definition.title;
+    document.documentElement.lang = data.definition.locale;
+    setSurvey(data);
+  };
 
-  // Load the definition, then restore the device state (pending submission, draft, done).
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const result = await loadSurvey(surveyId);
-      if (cancelled) return;
-      if (result.kind === 'not_found') return setPhase({ kind: 'not_found' });
-      if (result.kind === 'error') {
-        const outbox = storage.loadOutbox(surveyId);
-        return setPhase(outbox ? { kind: 'pending' } : { kind: 'load_error' });
-      }
-      const data = result.data;
-      await applyTheme(data.definition.theme);
-      if (cancelled) return;
-      document.title = data.definition.title;
-      document.documentElement.lang = data.definition.locale;
-      setSurvey(data);
-      const outbox = storage.loadOutbox(surveyId);
-      if (outbox) {
-        void trySend(outbox);
+  /** Writes the current answers to the draft of `version` (default: the loaded definition). */
+  const saveDraft = (version = live.current.def?.version, expiresAt?: number) => {
+    if (version === undefined) return;
+    const { answers: a, step: s, code: c, course: k } = live.current;
+    const normalized = normalizeCode(c);
+    storage.saveDraft(surveyId, version, { answers: a, step: s, code: normalized ? formatCode(normalized) : undefined, course: k }, expiresAt);
+  };
+
+  const dropOutbox = () => {
+    outboxRef.current = null;
+    storage.clearOutbox(surveyId);
+  };
+
+  const anyKeptAnswers = (): boolean => {
+    if (Object.keys(live.current.answers).length > 0) return true;
+    const version = live.current.def?.version ?? -1;
+    const drafts = [storage.loadDraft(surveyId, version), ...storage.otherDrafts(surveyId, version).map((d) => d.draft)];
+    return drafts.some((d) => d !== null && Object.keys(d.answers ?? {}).length > 0);
+  };
+
+  const showUnavailable = (reason: 'closed' | 'not_yet_open' | 'full') => {
+    setKeptAnswers(anyKeptAnswers());
+    setPhase({ kind: 'unavailable', reason });
+  };
+
+  /** Fresh participation (another person on this device, or a newly scanned code). */
+  const startFresh = (scanned: string | null) => {
+    storage.clearDone(surveyId);
+    pendingLinkCode.current = null;
+    setAnswers({});
+    setCode(scanned ?? '');
+    setCourse(null);
+    setCodeState('idle');
+    setStep(INTRO);
+    setNotice(null);
+    setMissing(new Set());
+    focusHeading.current = true;
+    setPhase({ kind: 'form' });
+    window.scrollTo({ top: 0 });
+  };
+
+  /**
+   * Puts answers the server did not take back into the form (review page) and into the draft
+   * right away, so a reload of the tab (iOS) does not lose them.
+   */
+  const keepInDraft = (outbox: Outbox, keepCourse: string | null) => {
+    const d = live.current.def;
+    const version = d?.version ?? outbox.surveyVersion;
+    const expiresAt = storage.loadDraft(surveyId, outbox.surveyVersion)?.expiresAt ?? outbox.expiresAt;
+    if (version !== outbox.surveyVersion) storage.clearDraft(surveyId, outbox.surveyVersion);
+    setAnswers(d && version !== outbox.surveyVersion ? migrateAnswers(d, outbox.answers) : outbox.answers);
+    setCode(outbox.code ? formatCode(outbox.code) : live.current.code);
+    setCourse(keepCourse);
+    setCodeState(keepCourse ? 'ok' : 'idle');
+    setStep(REVIEW);
+    saveDraft(version, expiresAt);
+  };
+
+  /**
+   * Loads the current definition and carries the answers over to its version: keys that no
+   * longer exist, or whose value no longer fits, are dropped; the draft moves to the new key.
+   * `draftVersion`: version the draft is saved under when no definition is loaded yet.
+   */
+  const reloadDefinition = async (draftVersion?: number): Promise<SurveyResponse | null> => {
+    const result = await loadSurvey(surveyId);
+    if (result.kind !== 'ok') return null;
+    const data = result.data;
+    storage.saveDefinitionCopy(surveyId, data);
+    await applyTheme(data.definition.theme);
+    const before = live.current.def?.version ?? draftVersion;
+    adoptDefinition(data);
+    setAnswers(migrateAnswers(data.definition, live.current.answers));
+    if (before !== undefined && before !== data.definition.version) {
+      const expiresAt = storage.loadDraft(surveyId, before)?.expiresAt;
+      storage.clearDraft(surveyId, before);
+      saveDraft(data.definition.version, expiresAt);
+    } else {
+      saveDraft(data.definition.version);
+    }
+    return data;
+  };
+
+  const trySendImpl = async (outbox: Outbox, quiet: boolean) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    if (!quiet) setPhase({ kind: 'sending' });
+    let result: SubmitResult;
+    try {
+      result = await submitAnswers(surveyId, outbox.submissionId, outbox.surveyVersion, outbox.answers, outbox.code);
+    } finally {
+      sendingRef.current = false;
+    }
+    switch (result.kind) {
+      case 'stored': {
+        // Only now does the device forget the answers. The submission id goes with the outbox,
+        // so nothing on the device links it to the stored response.
+        dropOutbox();
+        storage.clearAllDrafts(surveyId);
+        const d = live.current.def;
+        storage.markDone(surveyId, d ? !!d.accessCodes : true);
+        setAnswers({});
+        setCourse(null);
+        setCode('');
+        setCodeState('idle');
+        setStep(INTRO);
+        setNotice(null);
+        const scanned = pendingLinkCode.current;
+        if (scanned && normalizeCode(scanned) !== (outbox.code ?? '')) {
+          // A code scanned for somebody else while this submission was waiting.
+          startFresh(scanned);
+          return;
+        }
+        pendingLinkCode.current = null;
+        focusHeading.current = true;
+        setPhase({ kind: 'thanks' });
         return;
       }
-      if (data.status !== 'open') return setPhase({ kind: 'unavailable', reason: data.status });
-      if (storage.isDone(surveyId)) return setPhase({ kind: 'thanks' });
-      const draft = storage.loadDraft(surveyId, data.definition.version);
-      if (draft) {
-        setAnswers(draft.answers ?? {});
-        if (!linkCode && draft.code) {
-          setCode(draft.code);
-          setCourse(draft.course ?? null);
-          setCodeState(draft.course ? 'ok' : 'idle');
-        }
-        const maxStep = data.definition.sections.length;
-        setStep(Math.min(Math.max(INTRO, draft.step ?? INTRO), maxStep));
+      case 'offline':
+        setPhase({ kind: 'pending' });
+        return;
+      case 'closed':
+      case 'not_yet_open':
+      case 'full':
+        // The survey takes no answers now; they stay in the draft (until it expires).
+        dropOutbox();
+        keepInDraft(outbox, outbox.course ?? null);
+        showUnavailable(result.kind);
+        return;
+      case 'code_unknown':
+      case 'code_used':
+      case 'code_required':
+      case 'course_closed': {
+        // Answers stay; the participant enters another code on the review page.
+        dropOutbox();
+        keepInDraft(outbox, null);
+        if (!live.current.def) await reloadDefinition(outbox.surveyVersion);
+        const states: Record<typeof result.kind, CodeState> = {
+          code_unknown: 'unknown',
+          code_used: 'used',
+          code_required: 'required',
+          course_closed: 'course_closed',
+        };
+        setCodeState(states[result.kind]);
+        setNotice('code');
+        focusHeading.current = true;
+        setPhase({ kind: 'form' });
+        return;
       }
-      setPhase({ kind: 'form' });
-    })();
+      case 'version_changed':
+      case 'invalid': {
+        // The definition changed since the answers were given: carry them over and review.
+        dropOutbox();
+        keepInDraft(outbox, outbox.course ?? null);
+        const data = await reloadDefinition(outbox.surveyVersion);
+        if (data && data.status !== 'open') {
+          showUnavailable(data.status);
+          return;
+        }
+        setStep(REVIEW);
+        setMissing(new Set());
+        setNotice('changed');
+        focusHeading.current = true;
+        setPhase({ kind: 'form' });
+        return;
+      }
+      default:
+        // Outbox and draft stay; the participant can retry or discard.
+        setPhase({ kind: 'rejected' });
+    }
+  };
+
+  /** Restores a draft of this survey (also one saved under an older definition version). */
+  const restoreDraft = (d: SurveyDefinition, scanned: string | null) => {
+    let draft = storage.loadDraft(surveyId, d.version);
+    let changed = false;
+    if (!draft) {
+      const older = storage.otherDrafts(surveyId, d.version)[0];
+      if (older) {
+        const { expiresAt, ...rest } = older.draft;
+        draft = { ...rest, answers: migrateAnswers(d, older.draft.answers ?? {}) };
+        changed = true;
+        storage.clearAllDrafts(surveyId);
+        storage.saveDraft(surveyId, d.version, draft, expiresAt);
+      }
+    }
+    if (!draft) return;
+    const draftCode = normalizeCode(draft.code ?? '');
+    if (scanned) {
+      const scannedCode = normalizeCode(scanned);
+      if (draft.course && draftCode && draftCode !== scannedCode) {
+        // The draft was started with another, confirmed code, i.e. by somebody else on this
+        // device. The scanned code starts a fresh participation without their answers.
+        storage.clearAllDrafts(surveyId);
+        return;
+      }
+      setCourse(draftCode === scannedCode ? (draft.course ?? null) : null);
+      setCodeState(draftCode === scannedCode && draft.course ? 'ok' : 'idle');
+    } else if (draft.code) {
+      setCode(draft.code);
+      setCourse(draft.course ?? null);
+      setCodeState(draft.course ? 'ok' : 'idle');
+    }
+    setAnswers(draft.answers ?? {});
+    setStep(Math.min(Math.max(INTRO, draft.step ?? INTRO), d.sections.length));
+    if (changed) setNotice('changed');
+  };
+
+  // Load the definition, then restore the device state (pending submission, draft, done).
+  const startImpl = async (cancelled: () => boolean) => {
+    storage.sweepExpired();
+    const result = await loadSurvey(surveyId);
+    if (cancelled()) return;
+    if (result.kind === 'not_found') return setPhase({ kind: 'not_found' });
+    // Offline (also on a first visit before the service worker caches anything): use the copy
+    // of the definition kept from the last successful load.
+    const data = result.kind === 'ok' ? result.data : storage.loadDefinitionCopy(surveyId);
+    if (result.kind === 'ok') storage.saveDefinitionCopy(surveyId, result.data);
+    const outbox = storage.loadOutbox(surveyId) ?? outboxRef.current;
+    outboxRef.current = outbox;
+    if (!data) return setPhase(outbox ? { kind: 'pending' } : { kind: 'load_error' });
+    await applyTheme(data.definition.theme);
+    if (cancelled()) return;
+    adoptDefinition(data);
+    if (outbox) {
+      void trySend(outbox);
+      return;
+    }
+    const d = data.definition;
+    if (data.status !== 'open') return showUnavailable(data.status);
+    const scanned = pendingLinkCode.current;
+    if (storage.isDone(surveyId, !!d.accessCodes)) {
+      // A code in the link starts a new participation instead of the thank-you page.
+      if (!scanned) return setPhase({ kind: 'thanks' });
+      storage.clearDone(surveyId);
+    }
+    if (scanned) setCode(scanned);
+    restoreDraft(d, scanned);
+    pendingLinkCode.current = null;
+    setPhase({ kind: 'form' });
+  };
+
+  /** A code scanned while the page is open (#code= changed). */
+  const onScanned = (scanned: string) => {
+    if (phase.kind === 'thanks') return startFresh(scanned);
+    if (phase.kind === 'form' && !live.current.course) {
+      setCode(scanned);
+      setCodeState('idle');
+      saveDraft();
+      return;
+    }
+    // Kept for "Weitere Person auf diesem Gerät".
+    pendingLinkCode.current = scanned;
+  };
+
+  const impl = useRef({ send: trySendImpl, start: startImpl, scanned: onScanned });
+  useLayoutEffect(() => {
+    impl.current = { send: trySendImpl, start: startImpl, scanned: onScanned };
+  });
+  const trySend = useCallback((outbox: Outbox, quiet = false) => impl.current.send(outbox, quiet), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void impl.current.start(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [surveyId, trySend]);
+  }, [surveyId]);
 
   // Retry a pending submission when the connection returns, the page becomes visible again,
   // or every 20 seconds while the page stays open.
   useEffect(() => {
     if (phase.kind !== 'pending') return;
     const retry = () => {
-      const outbox = storage.loadOutbox(surveyId);
-      if (outbox) void trySend(outbox);
+      const outbox = outboxRef.current ?? storage.loadOutbox(surveyId);
+      if (outbox) void trySend(outbox, true);
     };
     const onVisible = () => document.visibilityState === 'visible' && retry();
     window.addEventListener('online', retry);
@@ -176,76 +410,106 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     };
   }, [phase.kind, surveyId, trySend]);
 
-  const persist = useCallback(
-    (nextAnswers: Answers, nextStep: number, nextCode = code, nextCourse = course) => {
-      if (def) storage.saveDraft(surveyId, def.version, { answers: nextAnswers, step: nextStep, code: nextCode, course: nextCourse });
-    },
-    [def, surveyId, code, course],
-  );
+  useEffect(() => {
+    const onHash = () => {
+      const scanned = codeFromLink();
+      if (scanned) impl.current.scanned(scanned);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  // After a page change, move focus to the new heading so screen readers start there.
+  useEffect(() => {
+    if (!focusHeading.current) return;
+    const heading = document.getElementById(HEADING_ID);
+    if (!heading) return;
+    focusHeading.current = false;
+    heading.focus({ preventScroll: true });
+  });
 
   /** Checks the access code before starting (or before resubmitting). Offline, it is checked on submit. */
   const verifyCode = async (): Promise<boolean> => {
-    if (!def?.accessCodes) return true;
-    const normalized = normalizeCode(code);
+    const d = live.current.def;
+    if (!d?.accessCodes) return true;
+    const normalized = normalizeCode(live.current.code);
     if (!normalized) {
-      if (def.accessCodes === 'optional') return true;
+      if (d.accessCodes === 'optional') return true;
       setCodeState('required');
       return false;
     }
     setCodeState('checking');
     const result = await checkCode(surveyId, normalized);
-    if (result.kind === 'ok') {
-      setCourse(result.course);
-      setCodeState('ok');
-      setCode(formatCode(normalized));
-      persist(answers, step, formatCode(normalized), result.course);
-      return true;
+    switch (result.kind) {
+      case 'ok':
+        setCode(formatCode(normalized));
+        setCourse(result.course);
+        setCodeState('ok');
+        // The draft holds the course right away (not only after the next answer).
+        saveDraft();
+        return true;
+      case 'offline':
+        setCourse(null);
+        setCodeState('offline');
+        return true;
+      case 'busy':
+        // Rate limit: temporary, the code is not marked as bad.
+        setCodeState('busy');
+        return false;
+      case 'closed':
+      case 'not_yet_open':
+        // The whole survey is closed: every code is expired. Answers given so far stay.
+        setCodeState('idle');
+        if (Object.keys(live.current.answers).length > 0) saveDraft();
+        showUnavailable(result.kind);
+        return false;
+      default:
+        setCourse(null);
+        setCodeState(result.kind);
+        if (Object.keys(live.current.answers).length > 0) saveDraft();
+        return false;
     }
-    setCourse(null);
-    setCodeState(result.kind);
-    return result.kind === 'offline';
   };
 
-  const onAnswer = useCallback(
-    (key: string, value: AnswerValue | undefined) => {
-      setAnswers((prev) => {
-        const next = { ...prev };
-        if (value === undefined) delete next[key];
-        else next[key] = value;
-        persist(next, step);
-        return next;
-      });
-      setMissing((prev) => {
-        if (!prev.has(key)) return prev;
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-    },
-    [persist, step],
-  );
+  const onCodeInput = (value: string) => {
+    setCode(value);
+    if (codeState !== 'idle' && codeState !== 'checking') {
+      setCourse(null);
+      setCodeState('idle');
+    }
+  };
+
+  const onAnswer = (key: string, value: AnswerValue | undefined) => {
+    const next = { ...live.current.answers };
+    if (value === undefined) delete next[key];
+    else next[key] = value;
+    setAnswers(next);
+    saveDraft();
+    setMissing((prev) => {
+      if (!prev.has(key)) return prev;
+      const rest = new Set(prev);
+      rest.delete(key);
+      return rest;
+    });
+  };
 
   const goTo = (next: number) => {
     setStep(next);
     setMissing(new Set());
-    persist(answers, next);
+    saveDraft();
+    focusHeading.current = true;
     window.scrollTo({ top: 0 });
   };
 
-  const sectionProblems = (d: SurveyDefinition, index: number): string[] =>
-    fieldsOf(d)
-      .filter((f) => f.sectionId === d.sections[index].id)
-      .filter((f) => fieldProblem(d, f, answers[f.key]) !== null)
-      .map((f) => f.key);
-
   const next = () => {
-    if (!def) return;
-    const current = Math.min(step, def.sections.length);
-    if (current >= 0 && current < def.sections.length) {
-      const problems = sectionProblems(def, current);
+    const d = live.current.def;
+    if (!d) return;
+    const current = Math.min(live.current.step, d.sections.length);
+    if (current >= 0 && current < d.sections.length) {
+      const problems = sectionProblems(d, current, live.current.answers);
       if (problems.length > 0) {
         setMissing(new Set(problems));
-        const firstItem = fieldsOf(def).find((f) => f.key === problems[0])?.item.id;
+        const firstItem = fieldsOf(d).find((f) => f.key === problems[0])?.item.id;
         document.getElementById(`item-${firstItem}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return;
       }
@@ -255,40 +519,62 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   };
 
   const submit = () => {
-    if (!def) return;
-    const firstBad = def.sections.findIndex((_, i) => sectionProblems(def, i).length > 0);
+    const d = live.current.def;
+    if (!d) return;
+    const given = live.current.answers;
+    const firstBad = d.sections.findIndex((_, i) => sectionProblems(d, i, given).length > 0);
     if (firstBad >= 0) {
       goTo(firstBad);
-      setMissing(new Set(sectionProblems(def, firstBad)));
+      setMissing(new Set(sectionProblems(d, firstBad, given)));
       return;
     }
-    const normalized = normalizeCode(code);
-    if (def.accessCodes === 'required' && !normalized) {
+    const normalized = normalizeCode(live.current.code);
+    if (d.accessCodes === 'required' && !normalized) {
       setCodeState('required');
       setNotice('code');
       return;
     }
     const outbox: Outbox = {
       submissionId: newSubmissionId(),
-      surveyVersion: def.version,
-      answers,
+      surveyVersion: d.version,
+      answers: given,
       code: normalized || undefined,
-      course,
+      course: live.current.course,
     };
+    outboxRef.current = outbox;
     storage.saveOutbox(surveyId, outbox);
-    storage.clearDraft(surveyId, def.version);
+    // The draft stays until the server confirms that the answers are stored.
+    saveDraft();
     void trySend(outbox);
   };
 
-  const startAnother = () => {
-    storage.clearDone(surveyId);
-    setAnswers({});
-    setCode('');
-    setCourse(null);
-    setCodeState('idle');
-    setStep(INTRO);
+  const startAnother = () => startFresh(pendingLinkCode.current ?? codeFromLink());
+
+  const retryNow = () => {
+    const outbox = outboxRef.current ?? storage.loadOutbox(surveyId);
+    if (outbox) {
+      void trySend(outbox);
+      return;
+    }
+    // Nothing left to send: back to the review page with the draft.
+    setStep(REVIEW);
     setPhase({ kind: 'form' });
-    window.scrollTo({ top: 0 });
+  };
+
+  const discard = () => {
+    if (!window.confirm(t.discardConfirm)) return;
+    dropOutbox();
+    storage.clearAllDrafts(surveyId);
+    setKeptAnswers(false);
+    if (phase.kind === 'unavailable') {
+      setAnswers({});
+      setCode('');
+      setCourse(null);
+      setCodeState('idle');
+      setStep(INTRO);
+      return;
+    }
+    startFresh(null);
   };
 
   const fieldCount = useMemo(() => (def ? fieldsOf(def).length : 0), [def]);
@@ -314,7 +600,19 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   }
   if (phase.kind === 'unavailable') {
     const text = phase.reason === 'closed' ? t.closed : phase.reason === 'full' ? t.full : t.notYetOpen;
-    return <Shell {...shellProps}><Message text={text} /></Shell>;
+    return (
+      <Shell {...shellProps}>
+        <Message text={text} />
+        {keptAnswers && (
+          <>
+            <div className="panel panel-warn"><p>{t.keptOnDevice}</p></div>
+            <div className="nav nav-quiet">
+              <button className="btn btn-link" onClick={discard}>{t.discard}</button>
+            </div>
+          </>
+        )}
+      </Shell>
+    );
   }
   if (phase.kind === 'sending') {
     return <Shell {...shellProps}><p className="status-text" role="status">{t.sending}</p></Shell>;
@@ -327,21 +625,25 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
           <p>{t.pendingText}</p>
         </div>
         <div className="nav">
-          <button
-            className="btn btn-primary"
-            onClick={() => {
-              const outbox = storage.loadOutbox(surveyId);
-              if (outbox) void trySend(outbox);
-            }}
-          >
-            {t.retry}
-          </button>
+          <span />
+          <button className="btn btn-primary" onClick={retryNow}>{t.retry}</button>
         </div>
       </Shell>
     );
   }
   if (phase.kind === 'rejected') {
-    return <Shell {...shellProps}><Message text={t.sendError} /></Shell>;
+    return (
+      <Shell {...shellProps}>
+        <div className="panel panel-error" role="alert">
+          <p>{t.sendError}</p>
+        </div>
+        <p>{t.sendErrorHint}</p>
+        <div className="nav">
+          <button className="btn btn-secondary" onClick={discard}>{t.discard}</button>
+          <button className="btn btn-primary" onClick={retryNow}>{t.tryAgain}</button>
+        </div>
+      </Shell>
+    );
   }
   if (!def) {
     return <Shell><Message text={phase.kind === 'thanks' ? t.sentOk : t.loadError} /></Shell>;
@@ -350,7 +652,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   if (phase.kind === 'thanks') {
     return (
       <Shell {...shellProps}>
-        <div className="panel panel-done">
+        <div className="panel panel-done" id={HEADING_ID} tabIndex={-1}>
           {def.thanks.heading && <h2 className="panel-title">{def.thanks.heading}</h2>}
           <Paragraphs paragraphs={def.thanks.paragraphs} />
         </div>
@@ -363,16 +665,26 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
 
   const sections = def.sections;
   const current = Math.min(step, sections.length);
+  const codeField = (
+    <CodeField
+      t={t}
+      code={code}
+      setCode={onCodeInput}
+      state={codeState}
+      course={course}
+      optional={def.accessCodes === 'optional'}
+    />
+  );
   if (current === INTRO) {
     return (
       <Shell {...shellProps}>
-        <article className="intro">
-          {def.intro.heading && <h1 className="page-title">{def.intro.heading}</h1>}
+        <article className="intro" id={def.intro.heading ? undefined : HEADING_ID} tabIndex={def.intro.heading ? undefined : -1}>
+          {def.intro.heading && <h1 className="page-title" id={HEADING_ID} tabIndex={-1}>{def.intro.heading}</h1>}
           <Paragraphs paragraphs={def.intro.paragraphs} />
-          {def.accessCodes && <CodeField t={t} code={code} setCode={setCode} state={codeState} course={course} optional={def.accessCodes === 'optional'} />}
+          {def.accessCodes && codeField}
           {def.privacy && (
             <details className="privacy">
-              <summary>{def.privacy.heading ?? 'Datenschutz'}</summary>
+              <summary>{def.privacy.heading ?? t.privacyHeading}</summary>
               <Paragraphs paragraphs={def.privacy.paragraphs} />
             </details>
           )}
@@ -400,14 +712,18 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     return (
       <Shell {...shellProps}>
         <Progress current={sections.length} total={sections.length} label={t.reviewTitle} />
-        <h1 className="page-title">{t.reviewTitle}</h1>
+        <h1 className="page-title" id={HEADING_ID} tabIndex={-1}>{t.reviewTitle}</h1>
         {notice === 'changed' && <div className="panel panel-warn" role="alert">{t.changed}</div>}
-        {notice === 'code' && <div className="panel panel-error" role="alert">{t.codeResubmit}</div>}
-        {def.accessCodes && (notice === 'code' || !course) ? (
-          <CodeField t={t} code={code} setCode={setCode} state={codeState} course={course} optional={def.accessCodes === 'optional'} />
-        ) : (
-          course && <p className="course-line">{t.course(course)}</p>
-        )}
+        {notice === 'code' &&
+          (codeState === 'course_closed' ? (
+            <div className="panel panel-warn" role="status">
+              <p>{t.keptOnDevice}</p>
+              <p><button className="btn btn-link" onClick={discard}>{t.discard}</button></p>
+            </div>
+          ) : (
+            <div className="panel panel-error" role="alert">{t.codeResubmit}</div>
+          ))}
+        {def.accessCodes && (notice === 'code' || !course) ? codeField : course && <p className="course-line">{t.course(course)}</p>}
         <ol className="review-list">
           {sections.map((s, i) => {
             const fields = fieldsOf(def).filter((f) => f.sectionId === s.id);
@@ -446,7 +762,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   return (
     <Shell {...shellProps}>
       <Progress current={current + 1} total={sections.length} label={t.sectionOf(current + 1, sections.length)} />
-      <h1 className="section-title">
+      <h1 className="section-title" id={HEADING_ID} tabIndex={-1}>
         <span className="section-num">{current + 1}</span>
         <span>{section.title}</span>
       </h1>
@@ -488,19 +804,17 @@ function CodeField({
   course: string | null;
   optional: boolean;
 }) {
-  const message =
-    state === 'checking'
-      ? t.codeChecking
-      : state === 'unknown'
-        ? t.codeUnknown
-        : state === 'used'
-          ? t.codeUsed
-          : state === 'required'
-            ? t.codeRequired
-            : state === 'offline'
-              ? t.codeOffline
-              : null;
-  const bad = state === 'unknown' || state === 'used' || state === 'required';
+  const messages: Partial<Record<CodeState, string>> = {
+    checking: t.codeChecking,
+    unknown: t.codeUnknown,
+    used: t.codeUsed,
+    required: t.codeRequired,
+    offline: t.codeOffline,
+    course_closed: t.courseClosed,
+    busy: t.codeBusy,
+  };
+  const message = messages[state] ?? null;
+  const bad = state === 'unknown' || state === 'used' || state === 'required' || state === 'course_closed';
   return (
     <div className={`code-field${bad ? ' is-invalid' : ''}`}>
       <label htmlFor="access-code">{t.codeLabel}{optional ? ` (${t.optional})` : ''}</label>
@@ -515,10 +829,13 @@ function CodeField({
         inputMode="text"
         maxLength={12}
         placeholder="XXXX-XXXX"
+        aria-required={optional ? undefined : true}
+        aria-invalid={bad || undefined}
+        aria-describedby={message ? 'access-code-hint access-code-message' : 'access-code-hint'}
       />
-      <p className="code-hint">{optional ? t.codeOptionalHint : t.codeHint}</p>
+      <p className="code-hint" id="access-code-hint">{optional ? t.codeOptionalHint : t.codeHint}</p>
       {state === 'ok' && course && <p className="course-line">{t.course(course)}</p>}
-      {message && <p className={bad ? 'code-error' : 'code-note'} role={bad ? 'alert' : 'status'}>{message}</p>}
+      {message && <p id="access-code-message" className={bad ? 'code-error' : 'code-note'} role={bad ? 'alert' : 'status'}>{message}</p>}
     </div>
   );
 }

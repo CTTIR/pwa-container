@@ -1,8 +1,8 @@
 // Flattening of free-form app records into table rows, shared by server (CSV) and browser (XLSX).
+// Records carry no date of any kind: a row is its running number, its collection and its fields.
 
 export interface RecordRow {
   collection: string;
-  receivedOn: string;
   data: unknown;
 }
 
@@ -11,8 +11,16 @@ export const FLATTEN_MAX_DEPTH = 6;
 /** Columns beyond this number are collected in one "_more" column as JSON. */
 export const MAX_COLUMNS = 500;
 
-/** Flattens nested objects into dotted keys; arrays, deep subtrees and other values become text. */
-export function flattenRecord(data: unknown, prefix = '', out: Record<string, string> = {}, depth = 0): Record<string, string> {
+/**
+ * Flattens nested objects into dotted keys; arrays, deep subtrees and other values become text.
+ * The result has no prototype, so keys such as "__proto__" or "constructor" are ordinary fields.
+ */
+export function flattenRecord(
+  data: unknown,
+  prefix = '',
+  out: Record<string, string> = Object.create(null) as Record<string, string>,
+  depth = 0,
+): Record<string, string> {
   if (data !== null && typeof data === 'object' && !Array.isArray(data) && depth < FLATTEN_MAX_DEPTH) {
     const entries = Object.entries(data as Record<string, unknown>);
     if (entries.length === 0 && prefix) out[prefix] = '{}';
@@ -43,14 +51,16 @@ export function collectColumns(records: Iterable<RecordRow>, maxColumns = MAX_CO
   return { keys, overflow };
 }
 
+/** Header row: record, collection, the field columns and, if needed, "_more". */
 export function headerFor(keys: string[], overflow: boolean): string[] {
-  return ['record', 'collection', 'received_on', ...keys, ...(overflow ? ['_more'] : [])];
+  return ['record', 'collection', ...keys, ...(overflow ? ['_more'] : [])];
 }
 
 /** One table row; fields beyond the known columns go into "_more" as JSON. */
 export function rowFor(index: number, r: RecordRow, keys: string[], overflow: boolean): string[] {
   const flat = flattenRecord(r.data);
-  const row = [String(index), r.collection, r.receivedOn, ...keys.map((k) => flat[k] ?? '')];
+  // Only own values: a column named "constructor" or "toString" must never read Object.prototype.
+  const row = [String(index), r.collection, ...keys.map((k) => (Object.hasOwn(flat, k) ? flat[k] : ''))];
   if (overflow) {
     const known = new Set(keys);
     const rest = Object.fromEntries(Object.entries(flat).filter(([k]) => !known.has(k)));

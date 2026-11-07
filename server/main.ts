@@ -34,11 +34,21 @@ if (config.appDomain) log(`apps are served on <subdomain>.${config.appDomain}; a
 const server = http.createServer((req, res) => {
   void handler(req, res);
 });
-server.requestTimeout = 120_000;
+server.requestTimeout = 60_000;
 server.headersTimeout = 15_000;
+server.maxConnections = 512;
 server.listen(config.port, config.host, () => {
   log(`listening on ${config.host}:${config.port} with ${registry.list().length} app(s)`);
 });
+
+// Hourly maintenance: rewrites changed database files so no insertion order remains.
+setInterval(() => {
+  try {
+    store.maintenance();
+  } catch (err) {
+    log(`maintenance failed: ${(err as Error).message}`);
+  }
+}, 60 * 60_000).unref();
 
 // `docker kill -s HUP <container>` re-reads provisioned surveys after a deployment update.
 process.on('SIGHUP', () => {

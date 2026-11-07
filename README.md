@@ -25,11 +25,23 @@ subdomain:
   - Upload new surveys and apps, and delete test responses.
 
 Survey responses are anonymous by construction:
-- The server stores only the answers, the survey version and the **calendar day** of submission.
-- It never stores times, IP addresses, user agents, cookies or participant codes, and it writes no
-  request logs.
-- Rows have random keys and are exported in random order, so the order of submission cannot be
-  reconstructed.
+- **What is stored:** the answers, the survey version and, for coded surveys, the course. There is
+  **no date or time of any kind**, no IP address, user agent, cookie or participant code, and the
+  server writes no request logs.
+- **Codes kept apart from answers:** a single-use code only gets a "used" mark in `codes.sqlite`.
+  The response is written separately to `answers.sqlite` under a fresh random id, never in the
+  same transaction.
+- **No logs or order on disk:** the databases use a rollback journal that is deleted after every
+  commit, with `secure_delete`. `answers.sqlite` is rewritten in random-id order after responses
+  arrive (VACUUM), and the other files hourly. No log and no page layout reveals which code went
+  with which answer, or the order of submissions.
+- **Only closed groups of five:** results are released when the group is closed (the course for
+  coded surveys, otherwise the survey) and has at least 5 responses. Organisers cannot watch
+  answers arrive or single out small groups.
+  - Free texts are only shown separately from ratings, shuffled per question.
+  - Nobody can see which individual code was used.
+- **Closing the survey:** closing it (administration or organiser entry) stops all answers and
+  expires every code, because all courses close with it.
 
 ## How it works
 
@@ -38,8 +50,8 @@ Survey responses are anonymous by construction:
 | Server | Node.js 24 (`node:http`, `node:sqlite`), no runtime dependencies, runs TypeScript directly |
 | Participant app | React 18 + Vite, installable PWA (Workbox service worker), offline outbox with automatic resend |
 | Administration | Second page of the same build, served only after HTTP Basic authentication |
-| Storage | One SQLite file in `/data`; uploaded apps in `/data/apps/<id>/` |
-| Routing | `<label>.APP_DOMAIN` per app; Traefik routes are written to a file-provider file |
+| Storage | `apps.sqlite`, `codes.sqlite`, `answers.sqlite` in `/data`; uploaded apps in `/data/apps/<id>/` |
+| Routing | `<label>.APP_DOMAIN` per app; either a label list for a host-side renderer (`ROUTES_JSON_FILE`, recommended) or a Traefik file-provider file (`TRAEFIK_DYNAMIC_FILE`) |
 
 ```
 https://ADMIN_HOST/admin                 administration of all apps (global admin)
@@ -101,7 +113,8 @@ app in the administration:
 - **Helper script:** records wait in `localStorage` while offline and are resent automatically.
 - **Without the helper:** `POST /api/records` with `{"collection": "sessions", "data": {…}}`
   answers 201.
-- **Storage:** the server keeps the record, its collection and the calendar day, in random order.
+- **Storage:** the server keeps the record and its collection, in random order, without any date.
+  A client record id de-duplicates resends.
 - **Limits per app:** at most 50,000 records and 25 MB in total, 256 KB per record. Records nested
   deeper than 32 levels or with more than 20,000 values are refused.
 - **Exports** are streamed. Surveys without their own `maxResponses` accept at most 20,000
@@ -158,15 +171,31 @@ every request, so changes apply without a restart.
 See [`compose.example.yaml`](compose.example.yaml).
 
 1. Create a wildcard DNS record `*.APP_DOMAIN` pointing to the server, plus `ADMIN_HOST`.
-2. Pre-create `pwa-container.yml` (owned by uid 1000) in Traefik's file-provider directory and mount
-   it at `/traefik/pwa-container.yml`. The container writes one router per app host into it.
-   Traefik then obtains a certificate for every new subdomain through its HTTP challenge.
+2. Routes, recommended way: set `ROUTES_JSON_FILE`. The container then writes only
+   `{"labels": […]}` to a directory it owns.
+   - A small root-owned script on the host validates the labels and renders the Traefik
+     file-provider YAML, so a compromised container cannot route other hosts.
+   - The simpler `TRAEFIK_DYNAMIC_FILE` mode makes the container write that YAML itself.
+   - Every router disables access logs (`observability.accessLogs: false`), and Traefik obtains a
+     certificate for every new subdomain through its HTTP challenge.
 3. Put the reserved subdomains of the domain's other services into `RESERVED_SUBDOMAINS`.
 4. Start the container, sign in at `https://ADMIN_HOST/admin`, test the survey, then delete the test
    responses (administration → "Weitere Aktionen", or `node server/cli.ts purge <id> --yes`).
 
 Uploaded web apps are trusted administrator content. Each runs on its own subdomain, so it is
 isolated from the administration and from other apps by the browser's same-origin rules.
+
+## Limits
+
+- **Requests:**
+  - Request bodies: 64 KB per response, 256 KB per record. Bodies over the limit are answered at
+    once and not buffered.
+  - At most 512 connections.
+- **Surveys:** at most 5,000 responses (or `maxResponses`) and 20 MB per survey. Surveys without
+  codes accept at most 120 responses per minute.
+- **Codes:** unknown codes are answered at most 30 times per minute and survey, so codes cannot be
+  found by guessing.
+- **Web-app records:** at most 50,000 records and 25 MB per app.
 
 ## Develop
 

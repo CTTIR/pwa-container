@@ -9,7 +9,7 @@ import { AdminAuth, hashPassword } from '../../server/auth.ts';
 import { loadConfig } from '../../server/config.ts';
 import { Store } from '../../server/db.ts';
 import { AppRegistry, randomLabel } from '../../server/registry.ts';
-import { traefikConfig } from '../../server/traefik.ts';
+import { createRoutesJsonWriter, traefikConfig } from '../../server/traefik.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-container-hosts-'));
 const surveysDir = path.join(root, 'surveys');
@@ -110,6 +110,31 @@ describe('subdomains', () => {
     expect((await get('pwa.example.org', '/admin', { Authorization: ADMIN })).status).toBe(200);
   });
 
+  it('treats a trailing dot like the plain host name and refuses foreign hosts', async () => {
+    expect(JSON.parse((await get('feedback.example.org.', '/api/context')).body)).toEqual({ app: { id: 'example-course-feedback', type: 'survey' } });
+    expect((await get('feedback.example.org.', '/admin/api/apps', { Authorization: ADMIN })).status).toBe(404);
+    expect((await get('evil.test', '/admin', { Authorization: ADMIN })).status).toBe(404);
+    expect((await get('pwa.example.org.', '/admin', { Authorization: ADMIN })).status).toBe(200);
+  });
+
+  it('keeps serving the last good survey when its file becomes invalid', () => {
+    const file = path.join(surveysDir, 'example-course-feedback', 'survey.json');
+    const good = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, '{ broken');
+    registry.reload();
+    expect(registry.get('example-course-feedback')?.survey?.def.version).toBe(1);
+    expect(registry.problems.join(' ')).toContain('still serving version 1');
+    fs.writeFileSync(file, good);
+    registry.reload();
+  });
+
+  it('can write only a list of labels for a host-side route renderer', () => {
+    const file = path.join(root, 'routes.json');
+    createRoutesJsonWriter(file, () => {})(registry.list());
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { labels: string[] };
+    expect(parsed.labels).toContain('feedback');
+  });
+
   it('changes labels, refuses reserved or taken ones, and rewrites the Traefik routes', () => {
     expect(registry.setHostLabel('tool', 'cloud')).toMatch(/reserved/);
     expect(registry.setHostLabel('tool', 'feedback')).toMatch(/already used/);
@@ -118,5 +143,6 @@ describe('subdomains', () => {
     expect(written).toContain('Host(`tools.example.org`)');
     expect(written).toContain('Host(`feedback.example.org`)');
     expect(written).toContain('certResolver: letsencrypt');
+    expect(written).toContain('accessLogs: false');
   });
 });

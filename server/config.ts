@@ -19,6 +19,8 @@ export interface Config {
   trustProxy: boolean;
   reservedLabels: string[];
   traefik: { dynamicFile: string; serviceUrl: string; entrypoint: string; certResolver: string } | null;
+  /** If set, only a JSON list of subdomain labels is written here (rendered into Traefik config on the host). */
+  routesJsonFile: string | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -48,5 +50,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           certResolver: env.TRAEFIK_CERT_RESOLVER ?? 'letsencrypt',
         }
       : null,
+    routesJsonFile: env.ROUTES_JSON_FILE ? path.resolve(env.ROUTES_JSON_FILE) : null,
   };
 }

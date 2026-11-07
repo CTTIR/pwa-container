@@ -43,6 +43,15 @@ export interface Strings {
   codeOffline: string;
   course: (label: string) => string;
   codeResubmit: string;
+  codeBusy: string;
+  courseClosed: string;
+  keptOnDevice: string;
+  sendErrorHint: string;
+  tryAgain: string;
+  discard: string;
+  discardConfirm: string;
+  fieldRequired: string;
+  privacyHeading: string;
   organiser: string;
 }
 
@@ -65,7 +74,7 @@ const de: Strings = {
   pendingText:
     'Gerade besteht keine Verbindung zum Server. Die Antworten sind auf diesem Gerät gespeichert und werden automatisch gesendet, sobald wieder eine Verbindung besteht. Bitte diese Seite geöffnet lassen oder später erneut aufrufen.',
   retry: 'Jetzt erneut senden',
-  closed: 'Diese Umfrage ist beendet. Es werden keine Antworten mehr angenommen.',
+  closed: 'Diese Umfrage ist geschlossen; es werden keine Antworten mehr angenommen.',
   notYetOpen: 'Diese Umfrage ist noch nicht geöffnet.',
   full: 'Diese Umfrage nimmt keine weiteren Antworten an.',
   notFound: 'Diese Umfrage wurde nicht gefunden. Bitte Link oder QR-Code prüfen.',
@@ -90,6 +99,15 @@ const de: Strings = {
   codeOffline: 'Keine Verbindung: Der Code wird beim Absenden geprüft.',
   course: (label) => `Kurs: ${label}`,
   codeResubmit: 'Bitte einen gültigen, unbenutzten Code eingeben und erneut absenden.',
+  codeBusy: 'Gerade zu viele Versuche. Bitte gleich noch einmal versuchen.',
+  courseClosed: 'Die Umfrage für diesen Kurs ist abgeschlossen.',
+  keptOnDevice: 'Die bisherigen Antworten bleiben höchstens 7 Tage auf diesem Gerät gespeichert und werden danach automatisch gelöscht.',
+  sendErrorHint: 'Die Antworten sind weiterhin auf diesem Gerät gespeichert.',
+  tryAgain: 'Erneut versuchen',
+  discard: 'Antworten verwerfen',
+  discardConfirm: 'Die Antworten werden von diesem Gerät gelöscht und nicht gesendet. Fortfahren?',
+  fieldRequired: 'Bitte diese Frage beantworten.',
+  privacyHeading: 'Datenschutz',
   organiser: 'Zugang Kursleitung / Admin',
 };
 
@@ -112,7 +130,7 @@ const en: Strings = {
   pendingText:
     'There is no connection to the server right now. Your answers are stored on this device and will be sent automatically once a connection is available. Please keep this page open or open it again later.',
   retry: 'Try again now',
-  closed: 'This survey has ended and no longer accepts answers.',
+  closed: 'This survey is closed; answers are no longer accepted.',
   notYetOpen: 'This survey is not open yet.',
   full: 'This survey does not accept further answers.',
   notFound: 'Survey not found. Please check the link or QR code.',
@@ -137,6 +155,15 @@ const en: Strings = {
   codeOffline: 'No connection: the code will be checked when you submit.',
   course: (label) => `Course: ${label}`,
   codeResubmit: 'Please enter a valid, unused code and submit again.',
+  codeBusy: 'Too many attempts right now. Please try again in a moment.',
+  courseClosed: 'The survey for this course has ended.',
+  keptOnDevice: 'The answers given so far stay on this device for at most 7 days and are then deleted automatically.',
+  sendErrorHint: 'The answers are still stored on this device.',
+  tryAgain: 'Try again',
+  discard: 'Discard answers',
+  discardConfirm: 'The answers will be deleted from this device and not sent. Continue?',
+  fieldRequired: 'Please answer this question.',
+  privacyHeading: 'Privacy',
   organiser: 'Organiser access',
 };
 

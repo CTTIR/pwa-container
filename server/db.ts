@@ -4,37 +4,41 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CODE_ALPHABET, CODE_LENGTH, isWellFormedCode, normalizeCode, type Answers } from '../shared/schema.ts';
 
+/** A stored response: no date or time of any kind is kept. */
 export interface StoredResponse {
   surveyVersion: number;
-  submittedOn: string;
   /** Label of the course whose access code was used, if any. */
   course: string | null;
   answers: Answers;
 }
 
-export type InsertResult = 'stored' | 'duplicate' | 'full' | 'code_required' | 'code_unknown' | 'code_used';
+export type InsertResult = 'stored' | 'duplicate' | 'full' | 'code_required' | 'code_unknown' | 'code_used' | 'course_closed';
 
 export interface CourseInfo {
   id: string;
+  /** Name of the event, entered by the organiser. */
   label: string;
-  createdOn: string;
+  /** Event date(s) entered by the organiser (YYYY-MM-DD); not related to any submission. */
+  eventDate: string;
+  eventDateEnd: string | null;
+  closed: boolean;
   codes: number;
   used: number;
   revoked: number;
   responses: number;
 }
 
-export type CodeCheck = { status: 'ok'; courseId: string; course: string } | { status: 'unknown' | 'used' };
+export type CodeCheck = { status: 'ok'; courseId: string; course: string } | { status: 'unknown' | 'used' | 'closed' };
 
+/** A code as organisers see it: whether it is blocked, but never whether it was used. */
 export interface CodeInfo {
   code: string;
-  used: boolean;
   revoked: boolean;
 }
 
+/** A data record of a web app: no date or time of any kind is kept. */
 export interface StoredRecord {
   collection: string;
-  receivedOn: string;
   data: unknown;
 }
 
@@ -54,34 +58,102 @@ export interface AppRow {
   hostname: string | null;
 }
 
+/** Answer files larger than this are compacted at most every few minutes instead of after each response. */
+const COMPACT_EVERY_TIME_BELOW = 32 * 1024 * 1024;
+const COMPACT_INTERVAL_MS = 5 * 60_000;
+
+function open(file: string): DatabaseSync {
+  const db = new DatabaseSync(file);
+  // No write-ahead log: a rollback journal is deleted after every commit, and deleted content is
+  // overwritten, so no log keeps several changes (or their order) side by side.
+  db.exec(`
+    PRAGMA journal_mode = DELETE;
+    PRAGMA secure_delete = ON;
+    PRAGMA synchronous = FULL;
+    PRAGMA busy_timeout = 5000;
+  `);
+  return db;
+}
+
+function transaction<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 /**
- * Response store. Rows use a random primary key in a WITHOUT ROWID table, so neither the
- * export order nor the physical row order reveals the order in which answers arrived.
+ * Storage in three separate SQLite files:
+ * - apps.sqlite: apps, survey versions, data records of web apps;
+ * - codes.sqlite: courses and single-use access codes;
+ * - answers.sqlite: survey responses.
+ *
+ * Using a code and storing the response are separate writes to separate files, never one
+ * transaction. A response gets a fresh random id and only the course, never the code. The
+ * answers file is rewritten in random-id order after responses arrive (VACUUM), so neither
+ * row placement nor overflow pages reveal the order of submissions.
  */
 export class Store {
-  private db: DatabaseSync;
+  private main: DatabaseSync;
+  private codes: DatabaseSync;
+  private answers: DatabaseSync;
+  private answersFile: string | null;
+  private lastCompact = 0;
+  private mainDirty = false;
+  /** Cached totals (count, bytes) per survey and per app, so limits never scan stored data. */
+  private surveyTotals = new Map<string, { n: number; bytes: number }>();
+  private appTotals = new Map<string, { n: number; bytes: number }>();
 
   constructor(dataDir: string) {
-    if (dataDir !== ':memory:') fs.mkdirSync(dataDir, { recursive: true });
-    const file = dataDir === ':memory:' ? ':memory:' : path.join(dataDir, 'responses.sqlite');
-    this.db = new DatabaseSync(file);
-    this.db.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA busy_timeout = 5000;
-      CREATE TABLE IF NOT EXISTS responses (
+    const memory = dataDir === ':memory:';
+    if (!memory) fs.mkdirSync(dataDir, { recursive: true });
+    const file = (name: string) => (memory ? ':memory:' : path.join(dataDir, name));
+    this.main = open(file('apps.sqlite'));
+    this.codes = open(file('codes.sqlite'));
+    this.answers = open(file('answers.sqlite'));
+    this.answersFile = memory ? null : file('answers.sqlite');
+    this.main.exec(`
+      CREATE TABLE IF NOT EXISTS apps (
         id TEXT PRIMARY KEY,
-        survey_id TEXT NOT NULL,
-        survey_version INTEGER NOT NULL,
-        submitted_on TEXT NOT NULL,
-        dedupe_key TEXT NOT NULL UNIQUE,
-        answers TEXT NOT NULL
+        type TEXT NOT NULL,
+        source TEXT NOT NULL,
+        title TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        status_override TEXT,
+        installed_on TEXT NOT NULL,
+        hostname TEXT,
+        collect_records INTEGER NOT NULL DEFAULT 0
       ) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS responses_survey ON responses (survey_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS apps_hostname ON apps (hostname) WHERE hostname IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS survey_versions (
+        survey_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        definition_hash TEXT NOT NULL,
+        PRIMARY KEY (survey_id, version)
+      ) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS records (
+        id TEXT PRIMARY KEY,
+        app_id TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        dedupe_key TEXT UNIQUE,
+        size INTEGER NOT NULL,
+        payload TEXT NOT NULL
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS records_app ON records (app_id, collection);
+    `);
+    this.codes.exec(`
       CREATE TABLE IF NOT EXISTS courses (
         id TEXT PRIMARY KEY,
         survey_id TEXT NOT NULL,
         label TEXT NOT NULL,
-        created_on TEXT NOT NULL
+        event_date TEXT NOT NULL,
+        event_date_end TEXT,
+        closed INTEGER NOT NULL DEFAULT 0
       ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS access_codes (
         survey_id TEXT NOT NULL,
@@ -92,51 +164,74 @@ export class Store {
         PRIMARY KEY (survey_id, code)
       ) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS access_codes_course ON access_codes (course_id);
-      CREATE TABLE IF NOT EXISTS records (
-        id TEXT PRIMARY KEY,
-        app_id TEXT NOT NULL,
-        collection TEXT NOT NULL,
-        received_on TEXT NOT NULL,
-        payload TEXT NOT NULL
-      ) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS records_app ON records (app_id, collection);
-      CREATE TABLE IF NOT EXISTS apps (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        source TEXT NOT NULL,
-        title TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        status_override TEXT,
-        installed_on TEXT NOT NULL,
-        hostname TEXT
-      ) WITHOUT ROWID;
-      CREATE UNIQUE INDEX IF NOT EXISTS apps_hostname ON apps (hostname) WHERE hostname IS NOT NULL;
-      CREATE TABLE IF NOT EXISTS survey_versions (
-        survey_id TEXT NOT NULL,
-        version INTEGER NOT NULL,
-        definition_hash TEXT NOT NULL,
-        PRIMARY KEY (survey_id, version)
-      ) WITHOUT ROWID;
     `);
-    this.addColumn('responses', 'course_id', 'TEXT');
-    this.addColumn('apps', 'collect_records', 'INTEGER NOT NULL DEFAULT 0');
+    this.answers.exec(`
+      CREATE TABLE IF NOT EXISTS responses (
+        id TEXT PRIMARY KEY,
+        survey_id TEXT NOT NULL,
+        survey_version INTEGER NOT NULL,
+        dedupe_key TEXT NOT NULL UNIQUE,
+        course_id TEXT,
+        size INTEGER NOT NULL,
+        answers TEXT NOT NULL
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS responses_survey ON responses (survey_id, course_id);
+    `);
   }
 
-  private addColumn(table: string, column: string, type: string): void {
-    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-    if (!cols.some((c) => c.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  }
-
-  private transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      const result = fn();
-      this.db.exec('COMMIT');
-      return result;
-    } catch (err) {
-      this.db.exec('ROLLBACK');
-      throw err;
+  private surveyTotal(surveyId: string): { n: number; bytes: number } {
+    let t = this.surveyTotals.get(surveyId);
+    if (!t) {
+      t = this.answers
+        .prepare('SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM responses WHERE survey_id = ?')
+        .get(surveyId) as { n: number; bytes: number };
+      this.surveyTotals.set(surveyId, t);
     }
+    return t;
+  }
+
+  private appTotal(appId: string): { n: number; bytes: number } {
+    let t = this.appTotals.get(appId);
+    if (!t) {
+      t = this.main.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM records WHERE app_id = ?').get(appId) as {
+        n: number;
+        bytes: number;
+      };
+      this.appTotals.set(appId, t);
+    }
+    return t;
+  }
+
+  /** Total size of the stored answers of a survey in bytes. */
+  surveyBytes(surveyId: string): number {
+    return this.surveyTotal(surveyId).bytes;
+  }
+
+  /** Rewrites the answers file in random-id order (see class comment). */
+  private compactAnswers(force = false): void {
+    const now = Date.now();
+    let small = true;
+    if (this.answersFile) {
+      try {
+        small = fs.statSync(this.answersFile).size < COMPACT_EVERY_TIME_BELOW;
+      } catch {
+        small = true;
+      }
+    }
+    if (force || small || now - this.lastCompact > COMPACT_INTERVAL_MS) {
+      this.answers.exec('VACUUM');
+      this.lastCompact = now;
+    }
+  }
+
+  /** Periodic maintenance: compacts files that changed (removes insertion-order traces of records). */
+  maintenance(): void {
+    this.compactAnswers(true);
+    if (this.mainDirty) {
+      this.main.exec('VACUUM');
+      this.mainDirty = false;
+    }
+    this.codes.exec('VACUUM');
   }
 
   /**
@@ -145,82 +240,111 @@ export class Store {
    * survey was edited without bumping its version.
    */
   registerVersion(surveyId: string, version: number, definitionHash: string): boolean {
-    const row = this.db
+    const row = this.main
       .prepare('SELECT definition_hash AS h FROM survey_versions WHERE survey_id = ? AND version = ?')
       .get(surveyId, version) as { h: string } | undefined;
     if (!row) {
-      this.db
-        .prepare('INSERT INTO survey_versions (survey_id, version, definition_hash) VALUES (?, ?, ?)')
-        .run(surveyId, version, definitionHash);
+      this.main.prepare('INSERT INTO survey_versions (survey_id, version, definition_hash) VALUES (?, ?, ?)').run(surveyId, version, definitionHash);
       return true;
     }
     if (row.h === definitionHash) return true;
-    const count = this.db
+    const count = this.answers
       .prepare('SELECT COUNT(*) AS n FROM responses WHERE survey_id = ? AND survey_version = ?')
       .get(surveyId, version) as { n: number };
     if (count.n > 0) return false;
-    this.db
-      .prepare('UPDATE survey_versions SET definition_hash = ? WHERE survey_id = ? AND version = ?')
-      .run(definitionHash, surveyId, version);
+    this.main.prepare('UPDATE survey_versions SET definition_hash = ? WHERE survey_id = ? AND version = ?').run(definitionHash, surveyId, version);
     return true;
   }
 
   /**
-   * Stores a response. With `codeMode` the access code is checked and marked as used in the same
-   * transaction; the response only gets the code's course, never the code itself.
+   * Stores a response. With `codeMode` the access code is checked and marked as used first (in
+   * the codes file); the response is then written separately (in the answers file) with a new
+   * random id and only the course. Both steps run synchronously, so no other request can come
+   * in between; if writing the response fails, the code is released again.
    */
   insert(
     surveyId: string,
     surveyVersion: number,
     submissionId: string,
     answers: Answers,
-    submittedOn: string,
-    maxResponses: number | undefined,
+    limits: { maxResponses: number; maxBytes: number },
     codeMode?: 'required' | 'optional',
     rawCode?: string,
   ): InsertResult {
     const dedupeKey = createHash('sha256').update(`${surveyId}:${submissionId}`).digest('hex');
-    return this.transaction((): InsertResult => {
-      if (this.db.prepare('SELECT 1 FROM responses WHERE dedupe_key = ?').get(dedupeKey)) return 'duplicate';
-      if (maxResponses !== undefined && this.count(surveyId) >= maxResponses) return 'full';
-      let courseId: string | null = null;
-      const code = rawCode ? normalizeCode(rawCode) : '';
-      if (codeMode === 'required' && !code) return 'code_required';
-      if (codeMode && code) {
-        const row = this.db
-          .prepare('SELECT course_id AS c, used AS u, revoked AS r FROM access_codes WHERE survey_id = ? AND code = ?')
-          .get(surveyId, code) as { c: string; u: number; r: number } | undefined;
-        if (!row || row.r) return 'code_unknown';
-        if (row.u) return 'code_used';
-        this.db.prepare('UPDATE access_codes SET used = 1 WHERE survey_id = ? AND code = ?').run(surveyId, code);
-        courseId = row.c;
-      }
-      this.db
+    if (this.answers.prepare('SELECT 1 FROM responses WHERE dedupe_key = ?').get(dedupeKey)) return 'duplicate';
+    const payload = JSON.stringify(answers);
+    const size = Buffer.byteLength(payload);
+    const total = this.surveyTotal(surveyId);
+    if (total.n >= limits.maxResponses || total.bytes + size > limits.maxBytes) return 'full';
+    let courseId: string | null = null;
+    let consumed: string | null = null;
+    const code = rawCode ? normalizeCode(rawCode) : '';
+    if (codeMode === 'required' && !code) return 'code_required';
+    if (codeMode && code) {
+      const row = this.codes
         .prepare(
-          'INSERT INTO responses (id, survey_id, survey_version, submitted_on, dedupe_key, answers, course_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          `SELECT a.course_id AS c, a.used AS u, a.revoked AS r, k.closed AS closed
+           FROM access_codes a JOIN courses k ON k.id = a.course_id WHERE a.survey_id = ? AND a.code = ?`,
         )
-        .run(randomUUID(), surveyId, surveyVersion, submittedOn, dedupeKey, JSON.stringify(answers), courseId);
-      return 'stored';
-    });
+        .get(surveyId, code) as { c: string; u: number; r: number; closed: number } | undefined;
+      if (!row || row.r) return 'code_unknown';
+      if (row.closed) return 'course_closed';
+      if (row.u) return 'code_used';
+      this.codes.prepare('UPDATE access_codes SET used = 1 WHERE survey_id = ? AND code = ?').run(surveyId, code);
+      consumed = code;
+      courseId = row.c;
+    }
+    try {
+      this.answers
+        .prepare('INSERT INTO responses (id, survey_id, survey_version, dedupe_key, course_id, size, answers) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(randomUUID(), surveyId, surveyVersion, dedupeKey, courseId, size, payload);
+    } catch (err) {
+      if (consumed) this.codes.prepare('UPDATE access_codes SET used = 0 WHERE survey_id = ? AND code = ?').run(surveyId, consumed);
+      if (err instanceof Error && /UNIQUE/i.test(err.message)) return 'duplicate';
+      throw err;
+    }
+    total.n += 1;
+    total.bytes += size;
+    this.compactAnswers();
+    return 'stored';
   }
 
   // ---- courses and single-use access codes ----
 
-  createCourse(surveyId: string, label: string, createdOn: string): string {
+  createCourse(surveyId: string, label: string, eventDate: string, eventDateEnd: string | null): string {
     const id = 'k' + randomBytes(5).toString('hex');
-    this.db.prepare('INSERT INTO courses (id, survey_id, label, created_on) VALUES (?, ?, ?, ?)').run(id, surveyId, label, createdOn);
+    this.codes
+      .prepare('INSERT INTO courses (id, survey_id, label, event_date, event_date_end) VALUES (?, ?, ?, ?, ?)')
+      .run(id, surveyId, label, eventDate, eventDateEnd);
     return id;
   }
 
+  /** Changes name and/or date(s) of a course. */
+  updateCourse(surveyId: string, courseId: string, changes: { label?: string; eventDate?: string; eventDateEnd?: string | null }): void {
+    if (changes.label !== undefined) this.codes.prepare('UPDATE courses SET label = ? WHERE id = ? AND survey_id = ?').run(changes.label, courseId, surveyId);
+    if (changes.eventDate !== undefined) this.codes.prepare('UPDATE courses SET event_date = ? WHERE id = ? AND survey_id = ?').run(changes.eventDate, courseId, surveyId);
+    if (changes.eventDateEnd !== undefined) {
+      this.codes.prepare('UPDATE courses SET event_date_end = ? WHERE id = ? AND survey_id = ?').run(changes.eventDateEnd, courseId, surveyId);
+    }
+  }
+
+  /** Closes every course of a survey (all its codes expire). Returns how many were open. */
+  closeAllCourses(surveyId: string): number {
+    const n = Number(this.codes.prepare('UPDATE courses SET closed = 1 WHERE survey_id = ? AND closed = 0').run(surveyId).changes);
+    this.compactAnswers(true);
+    return n;
+  }
+
   courseExists(surveyId: string, courseId: string): boolean {
-    return !!this.db.prepare('SELECT 1 FROM courses WHERE id = ? AND survey_id = ?').get(courseId, surveyId);
+    return !!this.codes.prepare('SELECT 1 FROM courses WHERE id = ? AND survey_id = ?').get(courseId, surveyId);
   }
 
   /** Creates `count` new random codes for a course and returns them. */
   addCodes(surveyId: string, courseId: string, count: number): string[] {
     const codes: string[] = [];
-    this.transaction(() => {
-      const insert = this.db.prepare('INSERT OR IGNORE INTO access_codes (survey_id, code, course_id) VALUES (?, ?, ?)');
+    transaction(this.codes, () => {
+      const insert = this.codes.prepare('INSERT OR IGNORE INTO access_codes (survey_id, code, course_id) VALUES (?, ?, ?)');
       while (codes.length < count) {
         let code = '';
         for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[randomInt(0, CODE_ALPHABET.length)];
@@ -231,83 +355,114 @@ export class Store {
   }
 
   /**
-   * Codes of a course with their state. Codes are stored in plain text so organisers can reprint
-   * them; responses never reference a code, only the course.
+   * Codes of a course for reprinting. Whether a single code was used is deliberately not
+   * returned: watching that change would link a submission to its slip.
    */
   listCodes(surveyId: string, courseId: string): CodeInfo[] {
-    const rows = this.db
-      .prepare('SELECT code, used, revoked FROM access_codes WHERE survey_id = ? AND course_id = ? ORDER BY code')
-      .all(surveyId, courseId) as { code: string; used: number; revoked: number }[];
-    return rows.map((r) => ({ code: r.code, used: r.used === 1, revoked: r.revoked === 1 }));
+    const rows = this.codes
+      .prepare('SELECT code, revoked FROM access_codes WHERE survey_id = ? AND course_id = ? ORDER BY code')
+      .all(surveyId, courseId) as { code: string; revoked: number }[];
+    return rows.map((r) => ({ code: r.code, revoked: r.revoked === 1 }));
   }
 
   /** Blocks or unblocks codes of a course; returns how many codes changed. */
   setCodesRevoked(surveyId: string, courseId: string, codes: string[], revoked: boolean): number {
     let changed = 0;
-    this.transaction(() => {
-      const update = this.db.prepare('UPDATE access_codes SET revoked = ? WHERE survey_id = ? AND course_id = ? AND code = ? AND revoked <> ?');
+    transaction(this.codes, () => {
+      const update = this.codes.prepare('UPDATE access_codes SET revoked = ? WHERE survey_id = ? AND course_id = ? AND code = ? AND revoked <> ?');
       for (const raw of codes) changed += Number(update.run(revoked ? 1 : 0, surveyId, courseId, normalizeCode(raw), revoked ? 1 : 0).changes);
     });
     return changed;
   }
 
-  renameCourse(surveyId: string, courseId: string, label: string): void {
-    this.db.prepare('UPDATE courses SET label = ? WHERE id = ? AND survey_id = ?').run(label, courseId, surveyId);
+  /** A closed course accepts no further responses; only closed courses can be released for results. */
+  setCourseClosed(surveyId: string, courseId: string, closed: boolean): void {
+    this.codes.prepare('UPDATE courses SET closed = ? WHERE id = ? AND survey_id = ?').run(closed ? 1 : 0, courseId, surveyId);
+    if (closed) this.compactAnswers(true);
   }
 
   checkCode(surveyId: string, rawCode: string): CodeCheck {
     const code = normalizeCode(rawCode);
     if (!isWellFormedCode(code)) return { status: 'unknown' };
-    const row = this.db
+    const row = this.codes
       .prepare(
-        `SELECT a.used AS u, a.revoked AS r, c.id AS id, c.label AS label FROM access_codes a JOIN courses c ON c.id = a.course_id
-         WHERE a.survey_id = ? AND a.code = ?`,
+        `SELECT a.used AS u, a.revoked AS r, c.id AS id, c.label AS label, c.closed AS closed
+         FROM access_codes a JOIN courses c ON c.id = a.course_id WHERE a.survey_id = ? AND a.code = ?`,
       )
-      .get(surveyId, code) as { u: number; r: number; id: string; label: string } | undefined;
+      .get(surveyId, code) as { u: number; r: number; id: string; label: string; closed: number } | undefined;
     if (!row || row.r) return { status: 'unknown' };
+    if (row.closed) return { status: 'closed' };
     if (row.u) return { status: 'used' };
     return { status: 'ok', courseId: row.id, course: row.label };
   }
 
-  listCourses(surveyId: string): CourseInfo[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT c.id AS id, c.label AS label, c.created_on AS createdOn,
-             (SELECT COUNT(*) FROM access_codes a WHERE a.course_id = c.id) AS codes,
-             (SELECT COUNT(*) FROM access_codes a WHERE a.course_id = c.id AND a.used = 1) AS used,
-             (SELECT COUNT(*) FROM access_codes a WHERE a.course_id = c.id AND a.revoked = 1) AS revoked,
-             (SELECT COUNT(*) FROM responses r WHERE r.course_id = c.id) AS responses
-           FROM courses c WHERE c.survey_id = ? ORDER BY c.created_on, c.label`,
-        )
-        .all(surveyId) as unknown as CourseInfo[]
-    );
+  private responseCounts(surveyId: string): Map<string, number> {
+    const rows = this.answers
+      .prepare('SELECT course_id AS c, COUNT(*) AS n FROM responses WHERE survey_id = ? AND course_id IS NOT NULL GROUP BY course_id')
+      .all(surveyId) as { c: string; n: number }[];
+    return new Map(rows.map((r) => [r.c, r.n]));
   }
 
-  /** Removes a course and its codes; refused while responses still belong to it. */
-  deleteCourse(surveyId: string, courseId: string): 'removed' | 'has_responses' | 'not_found' {
+  listCourses(surveyId: string): CourseInfo[] {
+    const counts = this.responseCounts(surveyId);
+    const rows = this.codes
+      .prepare(
+        `SELECT c.id AS id, c.label AS label, c.event_date AS eventDate, c.event_date_end AS eventDateEnd, c.closed AS closed,
+           (SELECT COUNT(*) FROM access_codes a WHERE a.course_id = c.id) AS codes,
+           (SELECT COUNT(*) FROM access_codes a WHERE a.course_id = c.id AND a.used = 1) AS used,
+           (SELECT COUNT(*) FROM access_codes a WHERE a.course_id = c.id AND a.revoked = 1) AS revoked
+         FROM courses c WHERE c.survey_id = ? ORDER BY c.event_date, c.label`,
+      )
+      .all(surveyId) as {
+      id: string;
+      label: string;
+      eventDate: string;
+      eventDateEnd: string | null;
+      closed: number;
+      codes: number;
+      used: number;
+      revoked: number;
+    }[];
+    return rows.map((r) => ({ ...r, closed: r.closed === 1, responses: counts.get(r.id) ?? 0 }));
+  }
+
+  /**
+   * Removes a course and its codes. With `withResponses` its responses are deleted too (for
+   * retention periods); otherwise this is refused while responses still belong to it.
+   */
+  deleteCourse(surveyId: string, courseId: string, withResponses = false): 'removed' | 'has_responses' | 'not_found' {
     if (!this.courseExists(surveyId, courseId)) return 'not_found';
-    const n = this.db.prepare('SELECT COUNT(*) AS n FROM responses WHERE course_id = ?').get(courseId) as { n: number };
-    if (n.n > 0) return 'has_responses';
-    this.db.prepare('DELETE FROM access_codes WHERE course_id = ?').run(courseId);
-    this.db.prepare('DELETE FROM courses WHERE id = ?').run(courseId);
+    const n = this.answers.prepare('SELECT COUNT(*) AS n FROM responses WHERE survey_id = ? AND course_id = ?').get(surveyId, courseId) as { n: number };
+    if (n.n > 0 && !withResponses) return 'has_responses';
+    if (n.n > 0) {
+      this.answers.prepare('DELETE FROM responses WHERE survey_id = ? AND course_id = ?').run(surveyId, courseId);
+      this.surveyTotals.delete(surveyId);
+      this.compactAnswers(true);
+    }
+    transaction(this.codes, () => {
+      this.codes.prepare('DELETE FROM access_codes WHERE course_id = ?').run(courseId);
+      this.codes.prepare('DELETE FROM courses WHERE id = ?').run(courseId);
+    });
+    this.codes.exec('VACUUM');
     return 'removed';
   }
 
   count(surveyId: string): number {
-    const row = this.db.prepare('SELECT COUNT(*) AS n FROM responses WHERE survey_id = ?').get(surveyId) as { n: number };
-    return row.n;
+    return this.surveyTotal(surveyId).n;
   }
 
-  list(surveyId: string, courseId?: string): StoredResponse[] {
-    const rows = this.db
-      .prepare(
-        `SELECT r.survey_version AS v, r.submitted_on AS d, r.answers AS a, c.label AS course
-         FROM responses r LEFT JOIN courses c ON c.id = r.course_id
-         WHERE r.survey_id = ? AND (? IS NULL OR r.course_id = ?) ORDER BY r.id`,
-      )
-      .all(surveyId, courseId ?? null, courseId ?? null) as { v: number; d: string; a: string; course: string | null }[];
-    return rows.map((r) => ({ surveyVersion: r.v, submittedOn: r.d, course: r.course, answers: JSON.parse(r.a) as Answers }));
+  /** Responses in random order, optionally limited to some courses. */
+  list(surveyId: string, courseIds?: string[]): StoredResponse[] {
+    const labels = new Map(
+      (this.codes.prepare('SELECT id, label FROM courses WHERE survey_id = ?').all(surveyId) as { id: string; label: string }[]).map((c) => [c.id, c.label]),
+    );
+    const rows = this.answers
+      .prepare('SELECT survey_version AS v, course_id AS c, answers AS a FROM responses WHERE survey_id = ? ORDER BY id')
+      .all(surveyId) as { v: number; c: string | null; a: string }[];
+    const allowed = courseIds ? new Set(courseIds) : null;
+    return rows
+      .filter((r) => !allowed || (r.c !== null && allowed.has(r.c)))
+      .map((r) => ({ surveyVersion: r.v, course: r.c ? (labels.get(r.c) ?? null) : null, answers: JSON.parse(r.a) as Answers }));
   }
 
   /**
@@ -316,28 +471,38 @@ export class Store {
    */
   purge(surveyId: string): number {
     const n = this.count(surveyId);
-    this.db.prepare('DELETE FROM responses WHERE survey_id = ?').run(surveyId);
-    this.db.prepare('DELETE FROM survey_versions WHERE survey_id = ?').run(surveyId);
-    this.db.prepare('UPDATE access_codes SET used = 0 WHERE survey_id = ?').run(surveyId);
+    this.answers.prepare('DELETE FROM responses WHERE survey_id = ?').run(surveyId);
+    this.surveyTotals.delete(surveyId);
+    this.main.prepare('DELETE FROM survey_versions WHERE survey_id = ?').run(surveyId);
+    this.codes.prepare('UPDATE access_codes SET used = 0 WHERE survey_id = ?').run(surveyId);
+    this.compactAnswers(true);
+    this.codes.exec('VACUUM');
     return n;
   }
 
   // ---- records sent by web apps ----
 
-  /** Stores a record unless the app's record count or total size limit would be exceeded. */
-  addRecord(appId: string, collection: string, receivedOn: string, payload: string, maxRecords: number, maxTotalBytes: number): 'stored' | 'full' {
-    const n = this.db
-      .prepare('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS bytes FROM records WHERE app_id = ?')
-      .get(appId) as { n: number; bytes: number };
-    if (n.n >= maxRecords || n.bytes + Buffer.byteLength(payload) > maxTotalBytes) return 'full';
-    this.db
-      .prepare('INSERT INTO records (id, app_id, collection, received_on, payload) VALUES (?, ?, ?, ?, ?)')
-      .run(randomUUID(), appId, collection, receivedOn, payload);
+  /**
+   * Stores a record unless the app's record count or total size limit would be exceeded. A
+   * client record id (if given) de-duplicates resends; only its hash is stored.
+   */
+  addRecord(appId: string, collection: string, payload: string, clientId: string | undefined, maxRecords: number, maxTotalBytes: number): 'stored' | 'duplicate' | 'full' {
+    const dedupeKey = clientId ? createHash('sha256').update(`${appId}:${clientId}`).digest('hex') : null;
+    if (dedupeKey && this.main.prepare('SELECT 1 FROM records WHERE dedupe_key = ?').get(dedupeKey)) return 'duplicate';
+    const size = Buffer.byteLength(payload);
+    const total = this.appTotal(appId);
+    if (total.n >= maxRecords || total.bytes + size > maxTotalBytes) return 'full';
+    this.main
+      .prepare('INSERT INTO records (id, app_id, collection, dedupe_key, size, payload) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(randomUUID(), appId, collection, dedupeKey, size, payload);
+    total.n += 1;
+    total.bytes += size;
+    this.mainDirty = true;
     return 'stored';
   }
 
   recordCollections(appId: string): CollectionInfo[] {
-    return this.db
+    return this.main
       .prepare('SELECT collection, COUNT(*) AS records FROM records WHERE app_id = ? GROUP BY collection ORDER BY collection')
       .all(appId) as unknown as CollectionInfo[];
   }
@@ -347,13 +512,13 @@ export class Store {
    * a database statement open between two writes.
    */
   recordPage(appId: string, collection: string | undefined, afterId: string, limit: number): { id: string; record: StoredRecord }[] {
-    const rows = this.db
+    const rows = this.main
       .prepare(
-        `SELECT id, collection AS c, received_on AS d, payload AS p FROM records
+        `SELECT id, collection AS c, payload AS p FROM records
          WHERE app_id = ? AND (? IS NULL OR collection = ?) AND id > ? ORDER BY id LIMIT ?`,
       )
-      .all(appId, collection ?? null, collection ?? null, afterId, limit) as { id: string; c: string; d: string; p: string }[];
-    return rows.map((r) => ({ id: r.id, record: { collection: r.c, receivedOn: r.d, data: JSON.parse(r.p) as unknown } }));
+      .all(appId, collection ?? null, collection ?? null, afterId, limit) as { id: string; c: string; p: string }[];
+    return rows.map((r) => ({ id: r.id, record: { collection: r.c, data: JSON.parse(r.p) as unknown } }));
   }
 
   /** All records page by page (synchronous; no statement stays open between pages). */
@@ -368,36 +533,39 @@ export class Store {
   }
 
   recordBytes(appId: string): number {
-    return (
-      this.db.prepare('SELECT COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS b FROM records WHERE app_id = ?').get(appId) as { b: number }
-    ).b;
+    return this.appTotal(appId).bytes;
   }
 
   recordCount(appId: string): number {
-    return (this.db.prepare('SELECT COUNT(*) AS n FROM records WHERE app_id = ?').get(appId) as { n: number }).n;
+    return this.appTotal(appId).n;
   }
 
   purgeRecords(appId: string, collection?: string): number {
-    const before = this.recordCount(appId);
-    this.db.prepare('DELETE FROM records WHERE app_id = ? AND (? IS NULL OR collection = ?)').run(appId, collection ?? null, collection ?? null);
-    return before - this.recordCount(appId);
+    const removed = Number(
+      this.main.prepare('DELETE FROM records WHERE app_id = ? AND (? IS NULL OR collection = ?)').run(appId, collection ?? null, collection ?? null).changes,
+    );
+    this.appTotals.delete(appId);
+    this.main.exec('VACUUM');
+    return removed;
   }
 
   setCollectRecords(appId: string, on: boolean): void {
-    this.db.prepare('UPDATE apps SET collect_records = ? WHERE id = ?').run(on ? 1 : 0, appId);
+    this.main.prepare('UPDATE apps SET collect_records = ? WHERE id = ?').run(on ? 1 : 0, appId);
   }
 
   collectsRecords(appId: string): boolean {
-    const row = this.db.prepare('SELECT collect_records AS c FROM apps WHERE id = ?').get(appId) as { c: number } | undefined;
+    const row = this.main.prepare('SELECT collect_records AS c FROM apps WHERE id = ?').get(appId) as { c: number } | undefined;
     return row?.c === 1;
   }
 
   getApp(id: string): AppRow | undefined {
-    return this.db.prepare('SELECT * FROM apps WHERE id = ?').get(id) as AppRow | undefined;
+    return this.main
+      .prepare('SELECT id, type, source, title, enabled, status_override, installed_on, hostname FROM apps WHERE id = ?')
+      .get(id) as AppRow | undefined;
   }
 
   upsertApp(row: AppRow): void {
-    this.db
+    this.main
       .prepare(
         `INSERT INTO apps (id, type, source, title, enabled, status_override, installed_on, hostname) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET type = excluded.type, source = excluded.source, title = excluded.title,
@@ -407,18 +575,25 @@ export class Store {
   }
 
   appByHostname(hostname: string): AppRow | undefined {
-    return this.db.prepare('SELECT * FROM apps WHERE hostname = ?').get(hostname) as AppRow | undefined;
+    return this.main
+      .prepare('SELECT id, type, source, title, enabled, status_override, installed_on, hostname FROM apps WHERE hostname = ?')
+      .get(hostname) as AppRow | undefined;
   }
 
   deleteApp(id: string): void {
-    this.db.prepare('DELETE FROM apps WHERE id = ?').run(id);
-    this.db.prepare('DELETE FROM records WHERE app_id = ?').run(id);
-    this.db.prepare('DELETE FROM access_codes WHERE survey_id = ?').run(id);
-    this.db.prepare('DELETE FROM courses WHERE survey_id = ?').run(id);
-    this.db.prepare('DELETE FROM survey_versions WHERE survey_id = ?').run(id);
+    this.main.prepare('DELETE FROM apps WHERE id = ?').run(id);
+    this.main.prepare('DELETE FROM records WHERE app_id = ?').run(id);
+    this.appTotals.delete(id);
+    this.main.prepare('DELETE FROM survey_versions WHERE survey_id = ?').run(id);
+    this.codes.prepare('DELETE FROM access_codes WHERE survey_id = ?').run(id);
+    this.codes.prepare('DELETE FROM courses WHERE survey_id = ?').run(id);
+    this.main.exec('VACUUM');
+    this.codes.exec('VACUUM');
   }
 
   close(): void {
-    this.db.close();
+    this.main.close();
+    this.codes.close();
+    this.answers.close();
   }
 }
