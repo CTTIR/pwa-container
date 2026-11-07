@@ -1,0 +1,22 @@
+node_modules
+dist
+dev-dist
+*.local
+.env*
+.DS_Store
+.vscode/*
+.idea
+*.tsbuildinfo
+playwright-report/
+test-results/
+# runtime data and secrets never belong in this public repository
+data/
+*.sqlite
+*.sqlite-*
+admins.json
+# local agent / tooling working files
+.claude/
+.codex/
+.Codex/
+AGENTS.md
+CLAUDE.md

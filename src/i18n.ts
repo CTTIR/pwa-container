@@ -1,0 +1,113 @@
+import type { Locale } from '../shared/schema.ts';
+
+export interface Strings {
+  start: string;
+  next: string;
+  back: string;
+  toReview: string;
+  submit: string;
+  sectionOf: (i: number, n: number) => string;
+  requiredMissing: string;
+  required: string;
+  optional: string;
+  reviewTitle: string;
+  reviewAnswered: (answered: number, total: number) => string;
+  reviewRequiredOk: string;
+  reviewFinal: string;
+  sending: string;
+  pendingTitle: string;
+  pendingText: string;
+  retry: string;
+  closed: string;
+  notYetOpen: string;
+  full: string;
+  notFound: string;
+  loadError: string;
+  reload: string;
+  changed: string;
+  sendError: string;
+  another: string;
+  home: string;
+  chars: (n: number, max: number) => string;
+  loading: string;
+  edit: string;
+  sentOk: string;
+}
+
+const de: Strings = {
+  start: 'Umfrage starten',
+  next: 'Weiter',
+  back: 'Zurück',
+  toReview: 'Zur Übersicht',
+  submit: 'Antworten absenden',
+  sectionOf: (i, n) => `Abschnitt ${i} von ${n}`,
+  requiredMissing: 'Bitte alle Pflichtfragen dieses Abschnitts beantworten.',
+  required: 'Pflichtfrage',
+  optional: 'optional',
+  reviewTitle: 'Übersicht',
+  reviewAnswered: (a, t) => `${a} von ${t} Antworten gegeben`,
+  reviewRequiredOk: 'Alle Pflichtfragen sind beantwortet.',
+  reviewFinal: 'Nach dem Absenden lassen sich die Antworten nicht mehr ändern.',
+  sending: 'Antworten werden gesendet …',
+  pendingTitle: 'Gespeichert, aber noch nicht gesendet',
+  pendingText:
+    'Gerade besteht keine Verbindung zum Server. Die Antworten sind auf diesem Gerät gespeichert und werden automatisch gesendet, sobald wieder eine Verbindung besteht. Bitte diese Seite geöffnet lassen oder später erneut aufrufen.',
+  retry: 'Jetzt erneut senden',
+  closed: 'Diese Umfrage ist beendet. Es werden keine Antworten mehr angenommen.',
+  notYetOpen: 'Diese Umfrage ist noch nicht geöffnet.',
+  full: 'Diese Umfrage nimmt keine weiteren Antworten an.',
+  notFound: 'Diese Umfrage wurde nicht gefunden. Bitte Link oder QR-Code prüfen.',
+  loadError: 'Die Umfrage konnte nicht geladen werden. Bitte Internetverbindung prüfen und die Seite neu laden.',
+  reload: 'Neu laden',
+  changed: 'Die Umfrage wurde inzwischen geändert. Bitte die Antworten prüfen und erneut absenden.',
+  sendError: 'Die Antworten wurden vom Server nicht angenommen.',
+  another: 'Weitere Person auf diesem Gerät',
+  home: 'Keine Umfrage ausgewählt. Bitte den Link oder QR-Code der Umfrage verwenden.',
+  chars: (n, max) => `${n} / ${max} Zeichen`,
+  loading: 'Wird geladen …',
+  edit: 'Bearbeiten',
+  sentOk: 'Vielen Dank! Die Antworten wurden gesendet.',
+};
+
+const en: Strings = {
+  start: 'Start survey',
+  next: 'Next',
+  back: 'Back',
+  toReview: 'Review',
+  submit: 'Submit answers',
+  sectionOf: (i, n) => `Section ${i} of ${n}`,
+  requiredMissing: 'Please answer all required questions in this section.',
+  required: 'Required',
+  optional: 'optional',
+  reviewTitle: 'Review',
+  reviewAnswered: (a, t) => `${a} of ${t} answers given`,
+  reviewRequiredOk: 'All required questions are answered.',
+  reviewFinal: 'Answers cannot be changed after submitting.',
+  sending: 'Sending answers …',
+  pendingTitle: 'Saved but not sent yet',
+  pendingText:
+    'There is no connection to the server right now. Your answers are stored on this device and will be sent automatically once a connection is available. Please keep this page open or open it again later.',
+  retry: 'Try again now',
+  closed: 'This survey has ended and no longer accepts answers.',
+  notYetOpen: 'This survey is not open yet.',
+  full: 'This survey does not accept further answers.',
+  notFound: 'Survey not found. Please check the link or QR code.',
+  loadError: 'The survey could not be loaded. Please check your connection and reload the page.',
+  reload: 'Reload',
+  changed: 'The survey has changed in the meantime. Please check your answers and submit again.',
+  sendError: 'The server did not accept the answers.',
+  another: 'Another person on this device',
+  home: 'No survey selected. Please use the survey link or QR code.',
+  chars: (n, max) => `${n} / ${max} characters`,
+  loading: 'Loading …',
+  edit: 'Edit',
+  sentOk: 'Thank you! Your answers have been sent.',
+};
+
+export function stringsFor(locale: Locale | undefined): Strings {
+  return locale === 'en' ? en : de;
+}
+
+export function browserStrings(): Strings {
+  return typeof navigator !== 'undefined' && navigator.language?.toLowerCase().startsWith('de') ? de : en;
+}

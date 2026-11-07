@@ -1,0 +1,71 @@
+{
+  "id": "example-course-feedback",
+  "version": 1,
+  "locale": "en",
+  "title": "Course feedback (example)",
+  "subtitle": "Demonstration survey",
+  "brand": "Example",
+  "theme": "neutral",
+  "footer": "Example survey shipped with pwa-container",
+  "closesAt": "2099-12-31T23:59:59Z",
+  "intro": {
+    "heading": "Your feedback",
+    "paragraphs": [
+      "This short survey takes about three minutes.",
+      "It is **anonymous**: no names, no participant codes and no IP addresses are stored."
+    ]
+  },
+  "privacy": {
+    "heading": "Privacy",
+    "paragraphs": [
+      "Only your answers and the day of submission are stored. Until you submit, your draft is kept in this browser only."
+    ]
+  },
+  "thanks": {
+    "heading": "Thank you!",
+    "paragraphs": ["Your answers have been received."]
+  },
+  "scales": {
+    "agree5": {
+      "options": [
+        { "value": 1, "label": "Strongly disagree" },
+        { "value": 2, "label": "Disagree" },
+        { "value": 3, "label": "Neutral" },
+        { "value": 4, "label": "Agree" },
+        { "value": 5, "label": "Strongly agree" }
+      ],
+      "notApplicable": { "value": "NA", "label": "Cannot judge" }
+    }
+  },
+  "sections": [
+    {
+      "id": "COURSE",
+      "title": "The course",
+      "description": "Rate the following statements.",
+      "legendScale": "agree5",
+      "items": [
+        { "id": "C01", "type": "scale", "scale": "agree5", "text": "The goals of the course were clear.", "required": true },
+        { "id": "C02", "type": "scale", "scale": "agree5", "text": "The schedule was appropriate.", "required": true },
+        {
+          "id": "C03",
+          "type": "matrix",
+          "scale": "agree5",
+          "text": "I feel confident in the course topic.",
+          "columns": [
+            { "id": "PRE", "label": "Before the course" },
+            { "id": "POST", "label": "After the course" }
+          ],
+          "required": true
+        },
+        { "id": "C04", "type": "choice", "text": "Which formats did you find most useful?", "options": ["Lectures", "Group work", "Practical exercises"], "multiple": true }
+      ]
+    },
+    {
+      "id": "OPEN",
+      "title": "Open feedback",
+      "items": [
+        { "id": "O01", "type": "text", "multiline": true, "maxLength": 1000, "text": "What should be improved?" }
+      ]
+    }
+  ]
+}

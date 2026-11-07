@@ -1,0 +1,38 @@
+{
+  "name": "pwa-container",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Self-hosted container for anonymous survey PWAs: offline-tolerant questionnaires, central anonymous storage, protected results export",
+  "author": "R. Heller <raban.heller@outlook.com>",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "start": "node server/main.ts",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.5",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.1.0",
+    "workbox-window": "^7.4.1"
+  },
+  "engines": {
+    "node": ">=24 <25"
+  }
+}

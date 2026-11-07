@@ -1,0 +1,23 @@
+import { Fragment } from 'react';
+
+/** Renders plain text with **bold** emphasis. No HTML is ever interpreted. */
+export function Inline({ text }: { text: string }) {
+  const parts = text.split('**');
+  return (
+    <>
+      {parts.map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : <Fragment key={i}>{part}</Fragment>))}
+    </>
+  );
+}
+
+export function Paragraphs({ paragraphs, className }: { paragraphs: string[]; className?: string }) {
+  return (
+    <>
+      {paragraphs.map((p, i) => (
+        <p key={i} className={className}>
+          <Inline text={p} />
+        </p>
+      ))}
+    </>
+  );
+}

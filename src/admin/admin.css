@@ -1,0 +1,281 @@
+.admin-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+
+.fact-num {
+  font-family: var(--font-heading);
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--c-primary);
+}
+
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.admin-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.admin-note {
+  color: var(--c-muted);
+  font-size: 0.85rem;
+  margin: 0 0 20px;
+}
+
+.admin-section {
+  margin-bottom: 28px;
+}
+
+.admin-section .item-card + .item-card {
+  margin-top: 10px;
+}
+
+.admin-key {
+  font-family: var(--font-heading);
+  color: var(--c-accent);
+  margin-right: 4px;
+}
+
+.admin-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 2.4em 1fr 2.4em;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.bar-row.bar-wide {
+  grid-template-columns: minmax(6em, 40%) 1fr 2.4em;
+}
+
+.bar-track {
+  height: 12px;
+  background: var(--c-surface-muted);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--c-primary);
+}
+
+.bar-fill.bar-muted {
+  background: var(--c-muted);
+}
+
+.bar-count {
+  text-align: right;
+  color: var(--c-muted);
+}
+
+.admin-texts {
+  margin: 0;
+  padding-left: 1.2em;
+}
+
+.admin-texts li {
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+}
+
+.admin-block {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--c-border);
+}
+
+.admin-problems {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+}
+
+.app-card.is-disabled {
+  opacity: 0.7;
+}
+
+.app-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.app-title {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.app-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--c-primary);
+  color: var(--c-primary-fg);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.badge-quiet {
+  background: var(--c-surface-muted);
+  color: var(--c-muted);
+}
+
+.badge-off {
+  background: var(--c-error);
+}
+
+.app-count {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 0.8rem;
+  color: var(--c-muted);
+  line-height: 1.1;
+}
+
+.app-status {
+  margin: 10px 0 6px;
+  font-size: 0.9rem;
+}
+
+.app-link {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  margin: 6px 0 10px;
+  font-size: 0.9rem;
+  word-break: break-all;
+}
+
+.qr-box {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.qr-box img {
+  border: 1px solid var(--c-border);
+  background: #fff;
+}
+
+.danger-zone {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--c-error);
+  border-radius: var(--radius);
+}
+
+.danger-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.danger-row + .danger-row {
+  margin-top: 10px;
+}
+
+.danger-row label {
+  flex: 1 1 260px;
+  font-size: 0.9rem;
+}
+
+.btn-danger {
+  background: var(--c-error);
+  color: #fff;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-grid {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.host-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  margin-bottom: 10px;
+}
+
+.host-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  flex: 1 1 260px;
+}
+
+.host-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.host-input .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.host-suffix {
+  color: var(--c-muted);
+  font-weight: 400;
+  white-space: nowrap;
+}

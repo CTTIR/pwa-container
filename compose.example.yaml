@@ -1,0 +1,42 @@
+# Example deployment behind Traefik (docker provider on network "proxy", ACME resolver
+# "letsencrypt"). Every app gets <subdomain>.${APP_DOMAIN}; this needs a wildcard DNS record
+# *.${APP_DOMAIN} -> server IP. The administration runs on ${ADMIN_HOST}.
+services:
+  pwa-container:
+    build: .
+    image: pwa-container:local
+    container_name: pwa-container
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}            # e.g. example.org  -> apps on <label>.example.org
+      ADMIN_HOST: ${ADMIN_HOST}            # e.g. pwa.example.org
+      RESERVED_SUBDOMAINS: ${RESERVED_SUBDOMAINS:-www,mail}
+      TRAEFIK_DYNAMIC_FILE: /traefik/pwa-container.yml
+      TRAEFIK_SERVICE_URL: http://pwa-container:8080
+      TRAEFIK_ENTRYPOINT: websecure
+      TRAEFIK_CERT_RESOLVER: letsencrypt
+    volumes:
+      - pwa-data:/data
+      - ./surveys:/surveys:ro
+      - ./themes:/themes:ro
+      - ./admins.json:/config/admins.json:ro
+      # Pre-create this file (owned by uid 1000) inside Traefik's file-provider directory.
+      - ${TRAEFIK_DYNAMIC_DIR}/pwa-container.yml:/traefik/pwa-container.yml
+    networks: [proxy]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ['no-new-privileges:true']
+    cap_drop: [ALL]
+    mem_limit: 256m
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: proxy
+      traefik.http.routers.pwa-admin.rule: Host(`${ADMIN_HOST}`)
+      traefik.http.routers.pwa-admin.entrypoints: websecure
+      traefik.http.routers.pwa-admin.tls.certresolver: letsencrypt
+      traefik.http.services.pwa-admin.loadbalancer.server.port: '8080'
+volumes:
+  pwa-data:
+networks:
+  proxy:
+    external: true
