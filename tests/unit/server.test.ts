@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../../server/app.ts';
-import { AdminAuth, hashPassword } from '../../server/auth.ts';
+import { AdminAuth, SOURCE_MAX_FAILURES, hashPassword } from '../../server/auth.ts';
 import { Store } from '../../server/db.ts';
 import { AppRegistry } from '../../server/registry.ts';
 
@@ -193,14 +193,24 @@ describe('administration', () => {
 });
 
 describe('admin authentication', () => {
-  it('keeps accepting correct credentials after many failed attempts', async () => {
+  const wrong = 'Basic ' + Buffer.from('admin:wrong password!!').toString('base64');
+
+  it('blocks a guessing source, but not other sources', async () => {
     const auth = new AdminAuth(credFile);
-    const wrong = 'Basic ' + Buffer.from('admin:wrong password!!').toString('base64');
-    for (let i = 0; i < 40; i++) expect(await auth.authenticate(wrong)).toBeNull();
+    for (let i = 0; i < SOURCE_MAX_FAILURES; i++) expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBeNull();
+    expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked');
+    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('blocked');
+    expect(await auth.authenticate(ADMIN, undefined, '198.51.100.2')).toBe('global');
+    expect(await auth.authenticate(LEAD, 'example-course-feedback', '198.51.100.2')).toBe('survey');
+    expect(await auth.authenticate(LEAD, 'another-survey', '198.51.100.2')).toBe('other');
     expect(auth.failureDelay()).toBeGreaterThan(600);
     expect(auth.failureDelay()).toBeLessThanOrEqual(5000);
-    expect(await auth.authenticate(ADMIN)).toBe('global');
-    expect(await auth.authenticate(LEAD, 'example-course-feedback')).toBe('survey');
-    expect(await auth.authenticate(LEAD, 'another-survey')).toBe('other');
+  });
+
+  it('limits parallel checks per source', async () => {
+    const auth = new AdminAuth(credFile);
+    const results = await Promise.all(Array.from({ length: 5 }, () => auth.authenticate(wrong, undefined, '203.0.113.9')));
+    expect(results.filter((r) => r === 'busy').length).toBe(3);
+    expect(await auth.authenticate(ADMIN, undefined, '198.51.100.3')).toBe('global');
   });
 });

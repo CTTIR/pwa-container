@@ -15,6 +15,7 @@ services:
       TRAEFIK_SERVICE_URL: http://pwa-container:8080
       TRAEFIK_ENTRYPOINT: websecure
       TRAEFIK_CERT_RESOLVER: letsencrypt
+      TRUST_PROXY: '1'                     # client address for the admin sign-in limiter comes from Traefik
     volumes:
       - pwa-data:/data
       - ./surveys:/surveys:ro

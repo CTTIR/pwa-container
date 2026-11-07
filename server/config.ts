@@ -16,6 +16,7 @@ export interface Config {
   /** Host name of the administration (and fallback path-based app URLs). */
   adminHost: string;
   publicScheme: string;
+  trustProxy: boolean;
   reservedLabels: string[];
   traefik: { dynamicFile: string; serviceUrl: string; entrypoint: string; certResolver: string } | null;
 }
@@ -34,6 +35,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appDomain: (env.APP_DOMAIN ?? '').trim().toLowerCase().replace(/^\.+|\.+$/g, ''),
     adminHost: (env.ADMIN_HOST ?? '').trim().toLowerCase(),
     publicScheme: env.PUBLIC_SCHEME === 'http' ? 'http' : 'https',
+    trustProxy: env.TRUST_PROXY === '1' || env.TRUST_PROXY === 'true',
     reservedLabels: (env.RESERVED_SUBDOMAINS ?? '')
       .split(',')
       .map((s) => s.trim().toLowerCase())

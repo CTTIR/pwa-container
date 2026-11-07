@@ -17,6 +17,8 @@ export interface AppDeps {
   now?: () => Date;
   /** With an app domain every app is served on `<label>.<appDomain>`. */
   appDomain?: string;
+  /** Behind a reverse proxy that sets X-Forwarded-For (Traefik): use its last entry as the source. */
+  trustProxy?: boolean;
   adminHost?: string;
   publicScheme?: string;
 }
@@ -184,6 +186,15 @@ export function createApp(deps: AppDeps) {
   const adminHost = deps.adminHost ?? '';
   const scheme = deps.publicScheme ?? 'https';
 
+  /** Client address for the admin sign-in limiter only; never stored or logged. */
+  function signInSource(req: IncomingMessage): string {
+    if (deps.trustProxy) {
+      const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (forwarded.length) return forwarded[forwarded.length - 1];
+    }
+    return req.socket.remoteAddress ?? 'unknown';
+  }
+
   function requestHost(req: IncomingMessage): string {
     return String(req.headers.host ?? '')
       .trim()
@@ -240,8 +251,12 @@ export function createApp(deps: AppDeps) {
 
   /** Basic authentication for /admin. Resolves to the granted role, or null after answering. */
   async function authorize(req: IncomingMessage, res: ServerResponse, surveyId?: string): Promise<'global' | 'survey' | null> {
-    const role = await auth.authenticate(req.headers.authorization, surveyId);
+    const role = await auth.authenticate(req.headers.authorization, surveyId, signInSource(req));
     if (role === 'global' || role === 'survey') return role;
+    if (role === 'blocked') {
+      sendText(res, 429, 'Zu viele fehlgeschlagene Anmeldeversuche von dieser Verbindung. Bitte in 15 Minuten erneut versuchen.');
+      return null;
+    }
     if (role === 'busy') {
       sendText(res, 429, 'Zu viele gleichzeitige Anmeldeversuche. Bitte gleich noch einmal versuchen.');
       return null;

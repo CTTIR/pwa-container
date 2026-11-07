@@ -27,6 +27,7 @@ const handler = createApp({
   appDomain: config.appDomain,
   adminHost: config.adminHost,
   publicScheme: config.publicScheme,
+  trustProxy: config.trustProxy,
 });
 if (config.appDomain) log(`apps are served on <subdomain>.${config.appDomain}; administration on ${config.adminHost || '(any other host)'}`);
 
