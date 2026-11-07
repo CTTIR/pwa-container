@@ -173,6 +173,9 @@ export class Store {
         PRIMARY KEY (survey_id, version)
       ) WITHOUT ROWID;
     `);
+    // Columns added after the first installations (CREATE TABLE IF NOT EXISTS leaves old tables as they are).
+    const appColumns = new Set((this.main.prepare('PRAGMA table_info(apps)').all() as { name: string }[]).map((c) => c.name));
+    if (!appColumns.has('uncoded_released')) this.main.exec('ALTER TABLE apps ADD COLUMN uncoded_released INTEGER NOT NULL DEFAULT 0');
     if (!memory) this.migrateShared(dataDir);
   }
 

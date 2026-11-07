@@ -694,6 +694,22 @@ describe('per-app databases and data access', () => {
     migrated.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it('adds columns that older app tables lack', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-container-columns-'));
+    const old = new DatabaseSync(path.join(dir, 'apps.sqlite'));
+    old.exec(`CREATE TABLE apps (id TEXT PRIMARY KEY, type TEXT NOT NULL, source TEXT NOT NULL, title TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1, status_override TEXT, installed_on TEXT NOT NULL, hostname TEXT,
+      collect_records INTEGER NOT NULL DEFAULT 0, released INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID`);
+    old.prepare('INSERT INTO apps (id, type, source, title, installed_on) VALUES (?, ?, ?, ?, ?)').run('alpha', 'survey', 'provisioned', 'A', '2000-01-01');
+    old.close();
+    const upgraded = new Store(dir);
+    expect(upgraded.uncodedReleased('alpha')).toBe(false);
+    upgraded.setUncodedReleased('alpha');
+    expect(upgraded.uncodedReleased('alpha')).toBe(true);
+    upgraded.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe('own password change', () => {
