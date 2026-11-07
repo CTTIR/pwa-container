@@ -132,7 +132,8 @@ export class Store {
         installed_on TEXT NOT NULL,
         hostname TEXT,
         collect_records INTEGER NOT NULL DEFAULT 0,
-        released INTEGER NOT NULL DEFAULT 0
+        released INTEGER NOT NULL DEFAULT 0,
+        uncoded_released INTEGER NOT NULL DEFAULT 0
       ) WITHOUT ROWID;
       CREATE UNIQUE INDEX IF NOT EXISTS apps_hostname ON apps (hostname) WHERE hostname IS NOT NULL;
       CREATE TABLE IF NOT EXISTS survey_versions (
@@ -458,6 +459,15 @@ export class Store {
   /** Permanent release flag of a survey without codes (closed with at least MIN_GROUP responses). */
   setAppReleased(appId: string): void {
     this.main.prepare('UPDATE apps SET released = 1 WHERE id = ?').run(appId);
+  }
+
+  /** Optional-code surveys: once answers without a code are released, none are accepted any more. */
+  setUncodedReleased(appId: string): void {
+    this.main.prepare('UPDATE apps SET uncoded_released = 1 WHERE id = ?').run(appId);
+  }
+
+  uncodedReleased(appId: string): boolean {
+    return (this.main.prepare('SELECT uncoded_released AS r FROM apps WHERE id = ?').get(appId) as { r: number } | undefined)?.r === 1;
   }
 
   appReleased(appId: string): boolean {

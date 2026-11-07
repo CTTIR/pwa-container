@@ -324,6 +324,11 @@ export function createApp(deps: AppDeps) {
       sendJson(res, 422, { error: 'invalid', fields: problems, version: def.version });
       return;
     }
+    // Optional-code surveys whose code-less answers are released accept none without a code.
+    if (def.accessCodes === 'optional' && !payload.code && store.uncodedReleased(def.id)) {
+      sendJson(res, 422, { error: 'code_required' });
+      return;
+    }
     // Surveys without codes are open to anyone with the link: limit the pace per survey
     // (counted only for well-formed answers, so junk cannot use up the budget).
     if ((!def.accessCodes || !payload.code) && !submitBucket(def.id).take()) {
@@ -549,12 +554,12 @@ export function createApp(deps: AppDeps) {
   function responseCounts(app: AppEntry, def: SurveyDefinition): { responses: number | null; responsesBand: 'belowMin' | 'atLeastMin' | null } {
     const total = store.count(app.id);
     if (def.accessCodes) {
-      const closedCount = store
+      const releasedCount = store
         .listCourses(app.id)
-        .filter((c) => c.closed)
+        .filter((c) => c.released)
         .reduce((n, c) => n + c.responses, 0);
-      const openCount = total - closedCount;
-      return { responses: closedCount, responsesBand: openCount === 0 ? null : openCount >= MIN_GROUP ? 'atLeastMin' : 'belowMin' };
+      const rest = total - releasedCount;
+      return { responses: releasedCount, responsesBand: rest === 0 ? null : rest >= MIN_GROUP ? 'atLeastMin' : 'belowMin' };
     }
     if (registry.statusOf(app, now()) === 'closed') return { responses: total, responsesBand: null };
     return { responses: null, responsesBand: total >= MIN_GROUP ? 'atLeastMin' : 'belowMin' };
@@ -603,17 +608,23 @@ export function createApp(deps: AppDeps) {
           released = true;
         }
         const band = c.responses >= MIN_GROUP ? 'atLeastMin' : 'belowMin';
+        // Exact numbers only for released groups; otherwise closing and reopening could be
+        // used to count single submissions.
         return {
           ...c,
           released,
-          responses: c.closed ? c.responses : null,
-          used: c.closed ? c.used : null,
-          responsesBand: c.closed ? null : band,
+          responses: released ? c.responses : null,
+          used: released ? c.used : null,
+          responsesBand: released ? null : band,
         };
       });
       const releasedCourseIds = courses.filter((c) => c.released).map((c) => c.id);
       const closed = registry.statusOf(app, now()) === 'closed';
-      const uncodedReleased = def.accessCodes === 'optional' && closed && store.uncodedCount(def.id) >= MIN_GROUP;
+      let uncodedReleased = def.accessCodes === 'optional' && store.uncodedReleased(def.id);
+      if (!uncodedReleased && def.accessCodes === 'optional' && closed && store.uncodedCount(def.id) >= MIN_GROUP) {
+        store.setUncodedReleased(def.id); // permanent: no further answers without a code
+        uncodedReleased = true;
+      }
       return { courses, releasedCourseIds, uncodedReleased, released: releasedCourseIds.length > 0 || uncodedReleased };
     }
     const closed = registry.statusOf(app, now()) === 'closed';

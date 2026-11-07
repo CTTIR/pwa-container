@@ -421,6 +421,22 @@ describe('courses and single-use codes', () => {
     expect(csv.trim().split('\r\n')).toHaveLength(6);
   });
 
+  it('shows no exact counts for a closed course below the minimum group size', async () => {
+    const small = await fetch(results('courses'), {
+      method: 'POST',
+      headers: adminWrite,
+      body: JSON.stringify({ label: 'Kleiner Kurs', eventDate: '2026-12-02', count: 3 }),
+    });
+    const body = (await small.json()) as { course: { id: string }; codes: string[] };
+    expect((await post(sid(40), body.codes[0])).status).toBe(201);
+    await fetch(results(`courses/${body.course.id}`), { method: 'PATCH', headers: adminWrite, body: JSON.stringify({ closed: true }) });
+    const list = (await (await fetch(results('courses'), { headers: { Authorization: ADMIN } })).json()) as {
+      courses: { id: string; responses: number | null; used: number | null; responsesBand: string | null; released: boolean }[];
+    };
+    expect(list.courses.find((c) => c.id === body.course.id)).toMatchObject({ released: false, responses: null, used: null, responsesBand: 'belowMin' });
+    await fetch(results(`courses/${body.course.id}?withResponses=1&confirm=${encodeURIComponent('Kleiner Kurs')}`), { method: 'DELETE', headers: adminWrite });
+  });
+
   it('refuses a second course with the same name', async () => {
     const dup = await fetch(results('courses'), {
       method: 'POST',
