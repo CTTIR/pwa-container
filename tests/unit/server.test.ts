@@ -20,6 +20,7 @@ let store: Store;
 
 const ADMIN = 'Basic ' + Buffer.from('admin:correct horse battery').toString('base64');
 const LEAD = 'Basic ' + Buffer.from('lead:course lead password').toString('base64');
+const CODED_LEAD = 'Basic ' + Buffer.from('codedlead:coded survey lead password').toString('base64');
 const WRITE = { 'X-Requested-With': 'pwa-container', 'Content-Type': 'application/json' };
 
 beforeAll(async () => {
@@ -35,7 +36,10 @@ beforeAll(async () => {
     credFile,
     JSON.stringify({
       global: [{ user: 'admin', hash: hashPassword('correct horse battery') }],
-      surveys: { 'example-course-feedback': [{ user: 'lead', hash: hashPassword('course lead password') }] },
+      surveys: {
+        'example-course-feedback': [{ user: 'lead', hash: hashPassword('course lead password') }],
+        'coded-survey': [{ user: 'codedlead', hash: hashPassword('coded survey lead password') }],
+      },
     }),
   );
   store = new Store(dataDir);
@@ -411,8 +415,13 @@ describe('courses and single-use codes', () => {
     expect((await post(sid(30), extra)).status).toBe(409);
   });
 
-  it('deletes a course with its responses only after typing its name', async () => {
+  it('deletes a course with its responses only for the global administration and after typing its name', async () => {
     expect((await fetch(results(`courses/${courseId}`), { method: 'DELETE', headers: adminWrite })).status).toBe(409);
+    const asLead = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
+      method: 'DELETE',
+      headers: { Authorization: CODED_LEAD, ...WRITE },
+    });
+    expect(asLead.status).toBe(403);
     expect((await fetch(results(`courses/${courseId}?withResponses=1&confirm=wrong`), { method: 'DELETE', headers: adminWrite })).status).toBe(400);
     const ok = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
       method: 'DELETE',

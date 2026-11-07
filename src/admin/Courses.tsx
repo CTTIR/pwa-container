@@ -13,6 +13,8 @@ interface Props {
   courses: CourseInfo[];
   /** Smallest group whose results are shown (k = 5). */
   minGroup: number;
+  /** Only the global administration may delete answers. */
+  canDeleteAnswers: boolean;
   onChanged: () => Promise<void> | void;
   onSheet: (sheet: CodeSheet) => void;
 }
@@ -51,7 +53,7 @@ function releaseText(c: CourseInfo, minGroup: number): string {
 type CodesState = CodeInfo[] | 'loading' | 'error';
 
 /** Courses (events) and their single-use access codes. */
-export function Courses({ surveyId, courses, minGroup, onChanged, onSheet }: Props) {
+export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChanged, onSheet }: Props) {
   const [draft, setDraft] = useState<EventDraft>(EMPTY_DRAFT);
   const [count, setCount] = useState(30);
   const [more, setMore] = useState<Record<string, number>>({});
@@ -285,7 +287,7 @@ export function Courses({ surveyId, courses, minGroup, onChanged, onSheet }: Pro
                   <button className="btn btn-link" disabled={busy} onClick={() => remove(c)}>
                     Löschen
                   </button>
-                ) : (
+                ) : canDeleteAnswers ? (
                   <button
                     className="btn btn-link link-danger"
                     disabled={busy}
@@ -293,7 +295,7 @@ export function Courses({ surveyId, courses, minGroup, onChanged, onSheet }: Pro
                   >
                     Kurs mit allen Antworten löschen …
                   </button>
-                )}
+                ) : null}
               </div>
 
               {editing?.id === c.id && (

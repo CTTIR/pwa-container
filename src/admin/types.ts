@@ -70,6 +70,8 @@ export interface SummaryResponse {
   definition: SurveyDefinition;
   /** Smallest group whose results are shown (k-anonymity), 5. */
   minGroup: number;
+  /** Signed-in role: 'global' (administration) or 'survey' (course lead). */
+  role?: 'global' | 'survey';
   /** Whether the data of this view are released. */
   released: boolean;
   /** Responses in this view (0 when not released). */

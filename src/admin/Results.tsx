@@ -261,7 +261,14 @@ export function Results({ surveyId }: { surveyId: string }) {
       </div>
       {shown && <p className="course-line">Auswertung für: {current ? eventLine(current) : withCodes ? 'alle freigegebenen Kurse' : 'alle Antworten'}</p>}
 
-      {withCodes && <Courses surveyId={surveyId} courses={courses} minGroup={k} onChanged={() => load()} onSheet={setSheet} />}
+      {withCodes && <Courses
+          surveyId={surveyId}
+          courses={courses}
+          minGroup={k}
+          canDeleteAnswers={data.role === 'global'}
+          onChanged={() => load()}
+          onSheet={setSheet}
+        />}
 
       {shown && (
         <>

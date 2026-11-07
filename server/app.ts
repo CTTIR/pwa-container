@@ -569,7 +569,8 @@ export function createApp(deps: AppDeps) {
       const id = parts[3];
       if (!id || !validAppId(id)) return sendText(res, 404, 'Not found');
       // Authenticate before revealing whether the survey exists.
-      if (!(await authorize(req, res, id))) return;
+      const role = await authorize(req, res, id);
+      if (!role) return;
       const app = registry.get(id);
       if (!app || app.type !== 'survey' || !app.survey) return sendText(res, 404, 'Not found');
       const def = app.survey.def;
@@ -661,6 +662,8 @@ export function createApp(deps: AppDeps) {
         }
         if (method === 'DELETE' && parts.length === 6) {
           const withResponses = url.searchParams.get('withResponses') === '1';
+          // Deleting answers is reserved for the global administration (like purging a survey).
+          if (withResponses && role !== 'global') return sendJson(res, 403, { error: 'only the global administration can delete answers' });
           if (withResponses && url.searchParams.get('confirm') !== current.label) {
             return sendJson(res, 400, { error: 'confirmation does not match the course name' });
           }
@@ -689,6 +692,7 @@ export function createApp(deps: AppDeps) {
             survey: { ...appInfo(app), title: def.title, subtitle: def.subtitle ?? null },
             definition: def,
             minGroup: MIN_GROUP,
+            role,
             released,
             responses: rows.length,
             course: courseParam ?? null,
