@@ -5,7 +5,8 @@ import { compactAnswers, formatCode, validateAnswers } from '../shared/schema.ts
 import type { AdminAuth } from './auth.ts';
 import type { Store } from './db.ts';
 import { STATIC_LIMITS, type AppEntry, type AppRegistry } from './registry.ts';
-import { buildCsv, exportKeys, fieldInfos, recordsCsv, summarize } from './report.ts';
+import { buildCsv, csvField, exportKeys, fieldInfos, summarize } from './report.ts';
+import { collectColumns, headerFor, rowFor, withinShape } from '../shared/records.ts';
 
 export interface AppDeps {
   store: Store;
@@ -27,6 +28,9 @@ const MAX_BODY = 64 * 1024;
 const MAX_DEFINITION = 1024 * 1024;
 const MAX_RECORD = 256 * 1024;
 const MAX_RECORDS_PER_APP = 50_000;
+const MAX_RECORD_BYTES_PER_APP = 25 * 1024 * 1024;
+/** Surveys without their own maxResponses accept at most this many responses. */
+const DEFAULT_MAX_RESPONSES = 20_000;
 const MAX_CODES_PER_REQUEST = 1000;
 const COLLECTION = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 const SUBMISSION_ID = /^[A-Za-z0-9-]{16,64}$/;
@@ -254,7 +258,16 @@ export function createApp(deps: AppDeps) {
     }
     const answers = compactAnswers(def, payload.answers as Record<string, never>);
     const code = typeof payload.code === 'string' ? payload.code : undefined;
-    const result = store.insert(def.id, def.version, payload.submissionId, answers, localDate(now()), def.maxResponses, def.accessCodes, code);
+    const result = store.insert(
+      def.id,
+      def.version,
+      payload.submissionId,
+      answers,
+      localDate(now()),
+      def.maxResponses ?? DEFAULT_MAX_RESPONSES,
+      def.accessCodes,
+      code,
+    );
     switch (result) {
       case 'stored':
         return sendJson(res, 201, { status: result });
@@ -288,9 +301,42 @@ export function createApp(deps: AppDeps) {
     const collection = typeof value.collection === 'string' ? value.collection : 'default';
     if (!COLLECTION.test(collection)) return sendJson(res, 400, { error: 'invalid collection name' });
     const data = 'data' in value ? value.data : value;
-    const result = store.addRecord(app.id, collection, localDate(now()), JSON.stringify(data), MAX_RECORDS_PER_APP);
+    if (!withinShape(data)) return sendJson(res, 400, { error: 'record is nested too deeply or has too many values' });
+    const result = store.addRecord(app.id, collection, localDate(now()), JSON.stringify(data), MAX_RECORDS_PER_APP, MAX_RECORD_BYTES_PER_APP);
     if (result === 'full') return sendJson(res, 409, { error: 'full' });
     sendJson(res, 201, { status: 'stored' });
+  }
+
+  async function write(res: ServerResponse, chunk: string): Promise<void> {
+    if (!res.write(chunk)) await new Promise<void>((resolve) => res.once('drain', () => resolve()));
+  }
+
+  /** Streams records as JSON or CSV without building the whole export in memory. */
+  async function streamRecords(res: ServerResponse, appId: string, collection: string | undefined, format: 'json' | 'csv', filename: string): Promise<void> {
+    res.writeHead(200, {
+      'Content-Type': format === 'json' ? 'application/json; charset=utf-8' : 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename.replace(/[^A-Za-z0-9._-]/g, '_')}"`,
+      'Cache-Control': 'no-store',
+    });
+    if (format === 'json') {
+      await write(res, `{"app":${JSON.stringify(appId)},"collection":${JSON.stringify(collection ?? null)},"records":[`);
+      let first = true;
+      for (const r of store.iterateRecords(appId, collection)) {
+        await write(res, (first ? '\n' : ',\n') + JSON.stringify(r));
+        first = false;
+      }
+      res.end('\n]}\n');
+      return;
+    }
+    // CSV: a first pass finds the columns, a second writes the rows.
+    const { keys, overflow } = collectColumns(store.iterateRecords(appId, collection));
+    await write(res, '\uFEFF' + headerFor(keys, overflow).map(csvField).join(',') + '\r\n');
+    let i = 0;
+    for (const r of store.iterateRecords(appId, collection)) {
+      i += 1;
+      await write(res, rowFor(i, r, keys, overflow).map(csvField).join(',') + '\r\n');
+    }
+    res.end();
   }
 
   function download(res: ServerResponse, filename: string, type: string, body: string): void {
@@ -489,18 +535,15 @@ export function createApp(deps: AppDeps) {
           collecting: store.collectsRecords(app.id),
           total: store.recordCount(app.id),
           collections: store.recordCollections(app.id),
-          limits: { maxRecordBytes: MAX_RECORD, maxRecords: MAX_RECORDS_PER_APP },
+          bytes: store.recordBytes(app.id),
+          limits: { maxRecordBytes: MAX_RECORD, maxRecords: MAX_RECORDS_PER_APP, maxTotalBytes: MAX_RECORD_BYTES_PER_APP },
         });
       }
-      if (method === 'GET' && parts[4] === 'records.json') {
-        const records = store.listRecords(app.id, collection);
-        return download(res, `${app.id}${suffix}_records.json`, 'application/json; charset=utf-8', JSON.stringify({ app: app.id, collection: collection ?? null, records }, null, 2));
+      if (method === 'GET' && (parts[4] === 'records.json' || parts[4] === 'records')) {
+        return streamRecords(res, app.id, collection, 'json', `${app.id}${suffix}_records.json`);
       }
       if (method === 'GET' && parts[4] === 'records.csv') {
-        return download(res, `${app.id}${suffix}_records.csv`, 'text/csv; charset=utf-8', recordsCsv(store.listRecords(app.id, collection)));
-      }
-      if (method === 'GET' && parts[4] === 'records') {
-        return sendJson(res, 200, { records: store.listRecords(app.id, collection) });
+        return streamRecords(res, app.id, collection, 'csv', `${app.id}${suffix}_records.csv`);
       }
       if (method === 'PATCH' && parts.length === 4) {
         if (!sameOriginWrite(req, res)) return;

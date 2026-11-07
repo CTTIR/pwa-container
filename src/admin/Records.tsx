@@ -8,8 +8,9 @@ interface RecordsInfo {
   app: { id: string; title: string; url: string; type: string };
   collecting: boolean;
   total: number;
+  bytes: number;
   collections: { collection: string; records: number }[];
-  limits: { maxRecordBytes: number; maxRecords: number };
+  limits: { maxRecordBytes: number; maxRecords: number; maxTotalBytes: number };
 }
 
 const api = (appId: string, rest = '') => `/admin/api/records/${encodeURIComponent(appId)}${rest}`;
@@ -78,7 +79,8 @@ export function Records({ appId }: { appId: string }) {
       </div>
       <p className="admin-note">
         Gespeichert werden nur der Datensatz, seine Sammlung und der Empfangstag – keine Uhrzeit, keine IP-Adressen; Reihenfolge zufällig.
-        Höchstens {info.limits.maxRecords.toLocaleString('de-DE')} Datensätze je App, je Datensatz {Math.round(info.limits.maxRecordBytes / 1024)} KB.
+        Belegt: {(info.bytes / 1024 / 1024).toFixed(1)} von {Math.round(info.limits.maxTotalBytes / 1024 / 1024)} MB; höchstens{' '}
+        {info.limits.maxRecords.toLocaleString('de-DE')} Datensätze je App, je Datensatz {Math.round(info.limits.maxRecordBytes / 1024)} KB.
       </p>
 
       <h2 className="section-title">Sammlungen</h2>

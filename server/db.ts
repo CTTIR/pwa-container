@@ -324,9 +324,12 @@ export class Store {
 
   // ---- records sent by web apps ----
 
-  addRecord(appId: string, collection: string, receivedOn: string, payload: string, maxRecords: number): 'stored' | 'full' {
-    const n = this.db.prepare('SELECT COUNT(*) AS n FROM records WHERE app_id = ?').get(appId) as { n: number };
-    if (n.n >= maxRecords) return 'full';
+  /** Stores a record unless the app's record count or total size limit would be exceeded. */
+  addRecord(appId: string, collection: string, receivedOn: string, payload: string, maxRecords: number, maxTotalBytes: number): 'stored' | 'full' {
+    const n = this.db
+      .prepare('SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS bytes FROM records WHERE app_id = ?')
+      .get(appId) as { n: number; bytes: number };
+    if (n.n >= maxRecords || n.bytes + Buffer.byteLength(payload) > maxTotalBytes) return 'full';
     this.db
       .prepare('INSERT INTO records (id, app_id, collection, received_on, payload) VALUES (?, ?, ?, ?, ?)')
       .run(randomUUID(), appId, collection, receivedOn, payload);
@@ -339,18 +342,25 @@ export class Store {
       .all(appId) as unknown as CollectionInfo[];
   }
 
-  recordCount(appId: string): number {
-    return (this.db.prepare('SELECT COUNT(*) AS n FROM records WHERE app_id = ?').get(appId) as { n: number }).n;
+  /** Records one by one (for streaming exports), in random order. */
+  *iterateRecords(appId: string, collection?: string): Generator<StoredRecord> {
+    const stmt = this.db.prepare(
+      `SELECT collection AS c, received_on AS d, payload AS p FROM records
+       WHERE app_id = ? AND (? IS NULL OR collection = ?) ORDER BY id`,
+    );
+    for (const r of stmt.iterate(appId, collection ?? null, collection ?? null) as Iterable<{ c: string; d: string; p: string }>) {
+      yield { collection: r.c, receivedOn: r.d, data: JSON.parse(r.p) as unknown };
+    }
   }
 
-  listRecords(appId: string, collection?: string): StoredRecord[] {
-    const rows = this.db
-      .prepare(
-        `SELECT collection AS c, received_on AS d, payload AS p FROM records
-         WHERE app_id = ? AND (? IS NULL OR collection = ?) ORDER BY id`,
-      )
-      .all(appId, collection ?? null, collection ?? null) as { c: string; d: string; p: string }[];
-    return rows.map((r) => ({ collection: r.c, receivedOn: r.d, data: JSON.parse(r.p) as unknown }));
+  recordBytes(appId: string): number {
+    return (
+      this.db.prepare('SELECT COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS b FROM records WHERE app_id = ?').get(appId) as { b: number }
+    ).b;
+  }
+
+  recordCount(appId: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM records WHERE app_id = ?').get(appId) as { n: number }).n;
   }
 
   purgeRecords(appId: string, collection?: string): number {

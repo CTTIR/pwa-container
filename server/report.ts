@@ -1,6 +1,5 @@
 import { fieldsOf, type AnswerValue, type Field, type SurveyDefinition } from '../shared/schema.ts';
-import type { StoredRecord, StoredResponse } from './db.ts';
-import { recordsTable } from '../shared/records.ts';
+import type { StoredResponse } from './db.ts';
 
 export interface FieldInfo {
   key: string;
@@ -148,7 +147,3 @@ export function buildCsv(def: SurveyDefinition, rows: StoredResponse[]): string 
   return BOM + lines.join('\r\n') + '\r\n';
 }
 
-export function recordsCsv(records: StoredRecord[]): string {
-  const { header, rows } = recordsTable(records);
-  return BOM + [header, ...rows].map((line) => line.map(csvField).join(',')).join('\r\n') + '\r\n';
-}

@@ -76,6 +76,8 @@ const OVERFLOW_MAX_CONCURRENT = 10;
 interface SourceState {
   failures: number[];
   inFlight: number;
+  /** Until then the source is cooling down: attempts are refused without a password check. */
+  blockedUntil: number;
 }
 
 export interface AdminAuthOptions {
@@ -83,6 +85,8 @@ export interface AdminAuthOptions {
   maxSources?: number;
   /** Pause implementation (tests replace it). */
   sleep?: (ms: number) => Promise<void>;
+  /** Clock (tests replace it). */
+  now?: () => number;
 }
 
 /**
@@ -114,11 +118,13 @@ export class AdminAuth {
   private sourceSecret = randomBytes(32);
   private maxSources: number;
   private sleep: (ms: number) => Promise<void>;
+  private clock: () => number;
 
   constructor(file: string, options: AdminAuthOptions = {}) {
     this.file = file;
     this.maxSources = options.maxSources ?? 10_000;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.clock = options.now ?? Date.now;
   }
 
   private read(): CredentialFile {
@@ -135,14 +141,13 @@ export class AdminAuth {
   }
 
   /**
-   * Pause after a failed attempt, during which the source keeps its sign-in slot. It grows with
-   * the source's recent failures (and a little with all failures); past SOURCE_MAX_FAILURES it
-   * doubles with every further failure up to five minutes, so a blocked source can hardly guess
-   * at all while its correct credentials would still be accepted.
+   * After a failed attempt: below SOURCE_MAX_FAILURES this is the answer delay (0.6–10 s, the
+   * sign-in slot is not held meanwhile); from the limit on it is the cooldown during which the
+   * source is refused outright, doubling with every further failure up to five minutes.
    */
-  delayFor(state: SourceState, now = Date.now()): number {
+  delayFor(state: Pick<SourceState, 'failures'>, now = this.clock()): number {
     const f = state.failures.length;
-    if (f > SOURCE_MAX_FAILURES) return Math.min(MAX_DELAY_MS * 2 ** (f - SOURCE_MAX_FAILURES - 1), BLOCKED_MAX_DELAY_MS);
+    if (f >= SOURCE_MAX_FAILURES) return Math.min(MAX_DELAY_MS * 2 ** (f - SOURCE_MAX_FAILURES), BLOCKED_MAX_DELAY_MS);
     return Math.min(600 + 300 * f + 10 * this.recentGlobalFailures(now), MAX_DELAY_MS);
   }
 
@@ -157,13 +162,13 @@ export class AdminAuth {
     if (this.sources.size >= this.maxSources) {
       // Only forget sources with nothing to remember; never evict a source with recent failures.
       for (const [k, v] of this.sources) {
-        if (k !== OVERFLOW_KEY && v.inFlight === 0 && prune(v).failures.length === 0) this.sources.delete(k);
+        if (k !== OVERFLOW_KEY && v.inFlight === 0 && v.blockedUntil <= now && prune(v).failures.length === 0) this.sources.delete(k);
       }
       if (this.sources.size >= this.maxSources) key = OVERFLOW_KEY;
     }
     let state = this.sources.get(key);
     if (!state) {
-      state = { failures: [], inFlight: 0 };
+      state = { failures: [], inFlight: 0, blockedUntil: 0 };
       this.sources.set(key, state);
     }
     return Object.assign(prune(state), { key });
@@ -188,30 +193,41 @@ export class AdminAuth {
    * Checks an Authorization header. Global credentials give full access; survey credentials
    * only give access to the results of that one survey.
    *
-   * Correct credentials are always accepted, so nobody can lock an administrator out. Failed
-   * attempts are slowed down per source: the source keeps its sign-in slot during a pause that
-   * grows with its failures (exponentially up to five minutes once it is past the limit), and it
-   * may only have two sign-ins in progress. Further wrong passwords from such a source get
-   * 'blocked' (HTTP 429). Long random passwords remain the main protection.
+   * Brute-force protection per source (IPv4 address or IPv6 /64):
+   * - at most two password checks of a source run at the same time ('busy' otherwise); slots
+   *   are only held while the check runs, never during pauses;
+   * - each failure is answered after a short, growing delay;
+   * - after SOURCE_MAX_FAILURES failures the source cools down (10 s, doubling per further
+   *   failure, at most 5 min). During the cooldown it is refused ('blocked') without any check,
+   *   so guessing is limited to one attempt per cooldown. A source without failures is never
+   *   affected; correct credentials from a cooling-down source work again once it has passed.
+   * Long random passwords remain the main protection.
    */
   async authenticate(header: string | undefined, surveyId?: string, source = 'unknown'): Promise<AuthResult> {
     if (!header || !header.startsWith('Basic ')) return null;
-    const state = this.sourceState(source, Date.now());
+    const now = this.clock();
+    const state = this.sourceState(source, now);
+    if (state.blockedUntil > now) return 'blocked';
     const limit = state.key === OVERFLOW_KEY ? OVERFLOW_MAX_CONCURRENT : SOURCE_MAX_CONCURRENT;
     if (state.inFlight >= limit) return 'busy';
     state.inFlight += 1;
+    let result: AuthResult;
     try {
-      const result = await this.check(header, surveyId);
-      if (result !== null) return result;
-      const wasBlocked = state.failures.length >= SOURCE_MAX_FAILURES;
-      const now = Date.now();
-      state.failures.push(now);
-      this.failures.push(now);
-      await this.sleep(this.delayFor(state, now));
-      return wasBlocked ? 'blocked' : null;
+      result = await this.check(header, surveyId);
     } finally {
       state.inFlight -= 1;
     }
+    if (result !== null) return result;
+    const failedAt = this.clock();
+    state.failures.push(failedAt);
+    this.failures.push(failedAt);
+    const delay = this.delayFor(state, failedAt);
+    if (state.failures.length >= SOURCE_MAX_FAILURES) {
+      state.blockedUntil = failedAt + delay;
+      return 'blocked';
+    }
+    await this.sleep(delay);
+    return null;
   }
 
   private async check(header: string, surveyId?: string): Promise<AuthResult> {

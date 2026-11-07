@@ -102,7 +102,10 @@ app in the administration:
 - **Without the helper:** `POST /api/records` with `{"collection": "sessions", "data": {…}}`
   answers 201.
 - **Storage:** the server keeps the record, its collection and the calendar day, in random order.
-  At most 50,000 records per app and 256 KB per record.
+- **Limits per app:** at most 50,000 records and 25 MB in total, 256 KB per record. Records nested
+  deeper than 32 levels or with more than 20,000 values are refused.
+- **Exports** are streamed. Surveys without their own `maxResponses` accept at most 20,000
+  responses.
 - **Downloads:**
   - JSON with the original structure.
   - CSV and XLSX with nested fields flattened to dotted columns, one sheet per collection.
@@ -118,14 +121,15 @@ Credentials live in a JSON file mounted at `/config/admins.json` and are never s
 }
 ```
 
-Brute-force protection works per client:
-- IPv4 addresses count individually, IPv6 addresses per /64 network.
-- Correct credentials are always accepted. Only failed attempts are slowed down: after each
-  failure the client keeps its sign-in slot for a growing pause of up to 10 seconds.
-- A client may only have two sign-ins in progress at once, which caps how fast it can guess.
-- After 10 failures within 15 minutes, further wrong passwords from that client get HTTP 429.
-- Clients with recent failures are never forgotten. If the table of clients is full, new
-  clients share one common bucket.
+Brute-force protection works per client (IPv4 address or IPv6 /64):
+- A client may run two password checks at a time. Slots are held only during the check, never
+  during pauses.
+- Failed attempts are answered after a short, growing delay.
+- After 10 failures within 15 minutes the client cools down: 10 seconds, doubling with every
+  further failure up to 5 minutes. During the cooldown its attempts are refused without a check,
+  even with correct credentials, so guessing is limited to one attempt per cooldown.
+- Clients without failures are never affected, and clients with recent failures are never
+  forgotten. If the table of clients is full, new clients share one common bucket.
 
 Client addresses are needed for this, so the server keeps them for this one purpose only. They are
 held only in memory, as keyed hashes whose secret changes on every restart, and they are never

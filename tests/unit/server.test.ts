@@ -196,39 +196,36 @@ describe('admin authentication', () => {
   const wrong = 'Basic ' + Buffer.from('admin:wrong password!!').toString('base64');
   const noPause = { sleep: async () => {} };
 
-  it('never locks out correct credentials, also from a guessing source', async () => {
-    const auth = new AdminAuth(credFile, noPause);
-    for (let i = 0; i < SOURCE_MAX_FAILURES; i++) expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBeNull();
-    expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked');
-    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('global');
-    const state = { failures: Array(SOURCE_MAX_FAILURES + 3).fill(Date.now()), inFlight: 0 };
-    expect(auth.delayFor(state)).toBe(40_000);
-    state.failures = Array(SOURCE_MAX_FAILURES + 20).fill(Date.now());
-    expect(auth.delayFor(state)).toBe(300_000);
+  it('cools down a guessing source without affecting other sources', async () => {
+    let clock = 1_000_000;
+    const auth = new AdminAuth(credFile, { ...noPause, now: () => clock });
+    for (let i = 0; i < SOURCE_MAX_FAILURES - 1; i++) expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBeNull();
+    expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked'); // limit reached: cooldown 10 s
+    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('blocked');
     expect(await auth.authenticate(ADMIN, undefined, '198.51.100.2')).toBe('global');
     expect(await auth.authenticate(LEAD, 'example-course-feedback', '198.51.100.2')).toBe('survey');
     expect(await auth.authenticate(LEAD, 'another-survey', '198.51.100.2')).toBe('other');
+    clock += 10_001;
+    expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked'); // next cooldown: 20 s
+    clock += 15_000;
+    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('blocked');
+    clock += 5_001;
+    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('global');
+    expect(auth.delayFor({ failures: Array(SOURCE_MAX_FAILURES + 2).fill(clock) })).toBe(40_000);
+    expect(auth.delayFor({ failures: Array(SOURCE_MAX_FAILURES + 20).fill(clock) })).toBe(300_000);
   });
 
-  it('pauses failed attempts while holding the source slot, which caps parallel guessing', async () => {
+  it('limits parallel checks per source but does not hold slots during pauses', async () => {
     const pauses: number[] = [];
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => (release = resolve));
     const auth = new AdminAuth(credFile, {
-      sleep: (ms) => {
+      sleep: async (ms) => {
         pauses.push(ms);
-        return gate;
       },
     });
-    const pending = Array.from({ length: 5 }, () => auth.authenticate(wrong, undefined, '203.0.113.9'));
-    await new Promise((r) => setTimeout(r, 300));
-    const busyNow = await auth.authenticate(wrong, undefined, '203.0.113.9');
-    expect(busyNow).toBe('busy');
-    release();
-    const results = await Promise.all(pending);
+    const results = await Promise.all(Array.from({ length: 5 }, () => auth.authenticate(wrong, undefined, '203.0.113.9')));
     expect(results.filter((r) => r === 'busy').length).toBe(3);
     expect(Math.min(...pauses)).toBeGreaterThanOrEqual(600);
-    expect(await auth.authenticate(ADMIN, undefined, '198.51.100.3')).toBe('global');
+    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.9')).toBe('global');
   });
 
   it('groups IPv6 addresses per /64 network', async () => {
@@ -237,7 +234,7 @@ describe('admin authentication', () => {
     expect(sourceGroup('::ffff:192.0.2.5')).toBe('v4:192.0.2.5');
     const auth = new AdminAuth(credFile, noPause);
     for (let i = 0; i < SOURCE_MAX_FAILURES; i++) await auth.authenticate(wrong, undefined, `2001:db8:1:2::${i + 1}`);
-    expect(await auth.authenticate(wrong, undefined, '2001:db8:1:2:abcd::5')).toBe('blocked');
+    expect(await auth.authenticate(ADMIN, undefined, '2001:db8:1:2:abcd::5')).toBe('blocked');
     expect(await auth.authenticate(wrong, undefined, '2001:db8:1:3::1')).toBeNull();
   });
 
@@ -337,6 +334,9 @@ describe('records of web apps', () => {
     expect((await send({ collection: 'sessions', data: { score: 7, nested: { x: 'y' }, list: [1, 2] } })).status).toBe(201);
     expect((await send({ collection: 'sessions', data: { score: 3 } })).status).toBe(201);
     expect((await send({ collection: 'bad name!', data: {} })).status).toBe(400);
+    let deep: unknown = 'leaf';
+    for (let i = 0; i < 40; i++) deep = { d: deep };
+    expect((await send({ collection: 'sessions', data: deep })).status).toBe(400);
   });
 
   it('offers overview and downloads in the administration', async () => {
