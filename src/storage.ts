@@ -78,6 +78,8 @@ export interface Outbox {
   surveyVersion: number;
   answers: Answers;
   code?: string;
+  /** The participant ticked the notice checkbox on the start page. */
+  noticeConfirmed?: boolean;
   course?: string | null;
   /** Epoch milliseconds after which the outbox is discarded. Never sent to the server. */
   expiresAt?: number;

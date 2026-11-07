@@ -297,7 +297,7 @@ export function createApp(deps: AppDeps) {
     const def = app.survey!.def;
     const body = await readJson(req, res, MAX_BODY);
     if (!body.ok) return;
-    const payload = (body.value ?? {}) as { submissionId?: unknown; surveyVersion?: unknown; answers?: unknown; code?: unknown };
+    const payload = (body.value ?? {}) as { submissionId?: unknown; surveyVersion?: unknown; answers?: unknown; code?: unknown; noticeConfirmed?: unknown };
     // A resend of an answer that is already stored (its reply got lost) is always a success,
     // even if the survey has been closed or changed since.
     if (typeof payload.submissionId === 'string' && SUBMISSION_ID.test(payload.submissionId) && store.isDuplicate(def.id, payload.submissionId)) {
@@ -317,6 +317,11 @@ export function createApp(deps: AppDeps) {
     // Answers given to another version of the questions must be reviewed by the participant.
     if (payload.surveyVersion !== undefined && payload.surveyVersion !== def.version) {
       sendJson(res, 409, { error: 'version_changed', version: def.version });
+      return;
+    }
+    // A survey with a notice only takes answers whose participant confirmed it on the start page.
+    if (def.notice && payload.noticeConfirmed !== true) {
+      sendJson(res, 422, { error: 'notice_not_confirmed', version: def.version });
       return;
     }
     const problems = validateAnswers(def, payload.answers);

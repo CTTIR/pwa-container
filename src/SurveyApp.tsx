@@ -78,6 +78,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const [code, setCodeValue] = useState(linkCode ?? '');
   const [course, setCourseValue] = useState<string | null>(null);
   const [codeState, setCodeState] = useState<CodeState>('idle');
+  const [noticeConfirmed, setNoticeConfirmed] = useState(false);
   /** Unsent answers are kept on the device although the survey cannot take them now. */
   const [keptAnswers, setKeptAnswers] = useState(false);
 
@@ -146,7 +147,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const flushOthers = async (exceptId?: string) => {
     for (const other of storage.listOutboxes(surveyId)) {
       if (other.submissionId === exceptId) continue;
-      const r = await submitAnswers(surveyId, other.submissionId, other.surveyVersion, other.answers, other.code);
+      const r = await submitAnswers(surveyId, other.submissionId, other.surveyVersion, other.answers, other.code, other.noticeConfirmed);
       if (r.kind === 'stored') storage.clearOutbox(surveyId, other.submissionId);
     }
   };
@@ -227,7 +228,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     if (!quiet) setPhase({ kind: 'sending' });
     let result: SubmitResult;
     try {
-      result = await submitAnswers(surveyId, outbox.submissionId, outbox.surveyVersion, outbox.answers, outbox.code);
+      result = await submitAnswers(surveyId, outbox.submissionId, outbox.surveyVersion, outbox.answers, outbox.code, outbox.noticeConfirmed);
     } finally {
       sendingRef.current = false;
     }
@@ -285,6 +286,23 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         };
         setCodeState(states[result.kind]);
         setNotice('code');
+        focusHeading.current = true;
+        setPhase({ kind: 'form' });
+        return;
+      }
+      case 'notice_not_confirmed': {
+        // Sent without the notice confirmed (e.g. from a page loaded before the notice existed):
+        // keep the answers and show the start page, whose button needs the checkbox.
+        dropOutbox();
+        keepInDraft(outbox, outbox.course ?? null);
+        const data = await reloadDefinition(outbox.surveyVersion);
+        if (data && data.status !== 'open') {
+          showUnavailable(data.status);
+          return;
+        }
+        setNoticeConfirmed(false);
+        setStep(INTRO);
+        setMissing(new Set());
         focusHeading.current = true;
         setPhase({ kind: 'form' });
         return;
@@ -558,6 +576,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       surveyVersion: d.version,
       answers: given,
       code: normalized || undefined,
+      // Answers can only be given after the start page, whose button needs the notice confirmed.
+      noticeConfirmed: d.notice ? true : undefined,
       course: live.current.course,
       // Answers never stay longer than the draft was allowed to (at most 7 days from its start).
       expiresAt: storage.loadDraft(surveyId, d.version)?.expiresAt,
@@ -701,6 +721,16 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       <Shell {...shellProps}>
         <article className="intro" id={def.intro.heading ? undefined : HEADING_ID} tabIndex={def.intro.heading ? undefined : -1}>
           {def.intro.heading && <h1 className="page-title" id={HEADING_ID} tabIndex={-1}>{def.intro.heading}</h1>}
+          {def.notice && (
+            <section className="panel panel-warn confirm-notice" aria-labelledby="confirm-notice-title">
+              {def.notice.heading && <h2 className="panel-title" id="confirm-notice-title">{def.notice.heading}</h2>}
+              <Paragraphs paragraphs={def.notice.paragraphs} />
+              <label className="confirm-check">
+                <input type="checkbox" checked={noticeConfirmed} onChange={(e) => setNoticeConfirmed(e.target.checked)} />
+                <span>{def.notice.confirm}</span>
+              </label>
+            </section>
+          )}
           <Paragraphs paragraphs={def.intro.paragraphs} />
           {def.accessCodes && codeField}
           {def.privacy && (
@@ -717,8 +747,9 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
           <span />
           <button
             className="btn btn-primary"
-            disabled={codeState === 'checking'}
+            disabled={codeState === 'checking' || (!!def.notice && !noticeConfirmed)}
             onClick={async () => {
+              if (def.notice && !noticeConfirmed) return;
               if (await verifyCode()) goTo(0);
             }}
           >

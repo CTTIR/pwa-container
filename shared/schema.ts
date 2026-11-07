@@ -67,6 +67,12 @@ export interface TextBlock {
   paragraphs: string[];
 }
 
+/** Text the participant must confirm (checkbox) before the start button is enabled. */
+export interface ConfirmBlock extends TextBlock {
+  /** Label of the checkbox, e.g. "Ich habe den Hinweis gelesen." */
+  confirm: string;
+}
+
 export interface SurveyDefinition {
   id: string;
   version: number;
@@ -88,6 +94,8 @@ export interface SurveyDefinition {
    */
   accessCodes?: 'required' | 'optional';
   intro: TextBlock;
+  /** Shown at the top of the start page; the start button needs its checkbox ticked. */
+  notice?: ConfirmBlock;
   privacy?: TextBlock;
   thanks: TextBlock;
   scales: Record<string, Scale>;
@@ -183,6 +191,10 @@ export function validateDefinition(raw: unknown): string[] {
   checkTextBlock(d.intro, 'intro', errors);
   checkTextBlock(d.thanks, 'thanks', errors);
   if (d.privacy !== undefined) checkTextBlock(d.privacy, 'privacy', errors);
+  if (d.notice !== undefined) {
+    checkTextBlock(d.notice, 'notice', errors);
+    if (!isRecord(d.notice) || !isNonEmptyString(d.notice.confirm)) errors.push('notice.confirm is required');
+  }
 
   const scaleNames = new Set<string>();
   if (!isRecord(d.scales)) {

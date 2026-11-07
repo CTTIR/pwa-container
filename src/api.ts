@@ -65,6 +65,7 @@ export type SubmitResult =
   /** The survey definition changed since the page was loaded. */
   | { kind: 'version_changed'; version: number | null }
   | { kind: 'invalid' }
+  | { kind: 'notice_not_confirmed' }
   | { kind: 'error' };
 
 export type CodeResult =
@@ -119,13 +120,13 @@ export async function checkCode(id: string, code: string): Promise<CodeResult> {
   return { kind: 'offline' };
 }
 
-export async function submitAnswers(id: string, submissionId: string, surveyVersion: number, answers: Answers, code?: string): Promise<SubmitResult> {
+export async function submitAnswers(id: string, submissionId: string, surveyVersion: number, answers: Answers, code?: string, noticeConfirmed?: boolean): Promise<SubmitResult> {
   let res: Response;
   try {
     res = await fetch(`/api/surveys/${encodeURIComponent(id)}/responses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ submissionId, surveyVersion, answers, code }),
+      body: JSON.stringify({ submissionId, surveyVersion, answers, code, noticeConfirmed }),
       cache: 'no-store',
       signal: timeoutSignal(SUBMIT_TIMEOUT_MS),
     });
@@ -155,6 +156,7 @@ export async function submitAnswers(id: string, submissionId: string, surveyVers
       case 'code_unknown':
       case 'code_required':
       case 'course_closed':
+      case 'notice_not_confirmed':
         return { kind: error };
       default:
         return res.status === 422 ? { kind: 'invalid' } : { kind: 'error' };
