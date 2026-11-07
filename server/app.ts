@@ -239,34 +239,27 @@ export function createApp(deps: AppDeps) {
   }
 
   /** Basic authentication for /admin. Resolves to the granted role, or null after answering. */
-  function authorize(req: IncomingMessage, res: ServerResponse, surveyId?: string): Promise<'global' | 'survey' | null> {
-    return new Promise((resolve) => {
-      if (auth.throttled()) {
-        sendText(res, 429, 'Too many failed sign-in attempts. Try again in a few minutes.');
-        resolve(null);
-        return;
-      }
-      const role = auth.authenticate(req.headers.authorization, surveyId);
-      if (role === 'global' || role === 'survey') {
-        resolve(role);
-        return;
-      }
-      if (role === 'other') {
-        sendText(res, 403, 'Diese Zugangsdaten gelten nicht für diese Seite.');
-        resolve(null);
-        return;
-      }
-      // A short pause slows down password guessing.
-      setTimeout(() => {
-        res.writeHead(401, {
-          'WWW-Authenticate': `Basic realm="${REALM}", charset="UTF-8"`,
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'no-store',
-        });
-        res.end('Authentication required');
-        resolve(null);
-      }, 600);
+  async function authorize(req: IncomingMessage, res: ServerResponse, surveyId?: string): Promise<'global' | 'survey' | null> {
+    const role = await auth.authenticate(req.headers.authorization, surveyId);
+    if (role === 'global' || role === 'survey') return role;
+    if (role === 'busy') {
+      sendText(res, 429, 'Zu viele gleichzeitige Anmeldeversuche. Bitte gleich noch einmal versuchen.');
+      return null;
+    }
+    if (role === 'other') {
+      sendText(res, 403, 'Diese Zugangsdaten gelten nicht für diese Seite.');
+      return null;
+    }
+    // Failed or missing credentials: answer after a pause that grows with recent failures.
+    const delay = req.headers.authorization ? auth.failureDelay() : 0;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    res.writeHead(401, {
+      'WWW-Authenticate': `Basic realm="${REALM}", charset="UTF-8"`,
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store',
     });
+    res.end('Authentication required');
+    return null;
   }
 
   /** State-changing admin requests must come from the admin page itself (CSRF guard). */

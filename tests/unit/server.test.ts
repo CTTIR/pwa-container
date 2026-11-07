@@ -191,3 +191,16 @@ describe('administration', () => {
     expect(store.count('example-course-feedback')).toBe(0);
   });
 });
+
+describe('admin authentication', () => {
+  it('keeps accepting correct credentials after many failed attempts', async () => {
+    const auth = new AdminAuth(credFile);
+    const wrong = 'Basic ' + Buffer.from('admin:wrong password!!').toString('base64');
+    for (let i = 0; i < 40; i++) expect(await auth.authenticate(wrong)).toBeNull();
+    expect(auth.failureDelay()).toBeGreaterThan(600);
+    expect(auth.failureDelay()).toBeLessThanOrEqual(5000);
+    expect(await auth.authenticate(ADMIN)).toBe('global');
+    expect(await auth.authenticate(LEAD, 'example-course-feedback')).toBe('survey');
+    expect(await auth.authenticate(LEAD, 'another-survey')).toBe('other');
+  });
+});
