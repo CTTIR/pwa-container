@@ -11,6 +11,8 @@ export interface Config {
   themesDir: string;
   distDir: string;
   credentialsFile: string;
+  /** Passwords administrators changed themselves (writable; in the data volume). */
+  passwordOverridesFile: string;
   /** Apps get `<label>.<appDomain>`; empty = path-based URLs only (local use). */
   appDomain: string;
   /** Host name of the administration (and fallback path-based app URLs). */
@@ -34,6 +36,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     themesDir: path.resolve(env.THEMES_DIR ?? '/themes'),
     distDir: path.resolve(env.DIST_DIR ?? path.join(here, '..', 'dist')),
     credentialsFile: path.resolve(env.ADMIN_CREDENTIALS_FILE ?? '/config/admins.json'),
+    passwordOverridesFile: path.resolve(env.PASSWORD_OVERRIDES_FILE ?? path.join(env.DATA_DIR ?? '/data', 'admin-passwords.json')),
     appDomain: (env.APP_DOMAIN ?? '').trim().toLowerCase().replace(/^\.+|\.+$/g, ''),
     adminHost: (env.ADMIN_HOST ?? '').trim().toLowerCase(),
     publicScheme: env.PUBLIC_SCHEME === 'http' ? 'http' : 'https',

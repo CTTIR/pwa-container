@@ -15,6 +15,24 @@ interface CredentialFile {
   surveys?: Record<string, Credential[]>;
 }
 
+/**
+ * Passwords that administrators changed themselves. Kept in a separate, writable file: the
+ * credentials file stays read-only for the container, so no one can add users or rights from
+ * inside. An entry replaces the hash of one existing user only while that user's hash in the
+ * credentials file is still `baseHash`; a new hash set by the operator there wins automatically.
+ */
+interface PasswordOverride {
+  /** "global" or a survey id. */
+  scope: string;
+  user: string;
+  baseHash: string;
+  hash: string;
+}
+
+export type PasswordChangeResult = 'changed' | 'busy' | 'wrong_current' | 'too_short' | 'too_long' | 'same' | 'mismatch' | 'unavailable' | 'not_found';
+
+export const MAX_PASSWORD_LENGTH = 256;
+
 const N = 16384;
 const R = 8;
 const P = 1;
@@ -110,6 +128,8 @@ export interface AdminAuthOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Clock (tests replace it). */
   now?: () => number;
+  /** Writable file for passwords that administrators change themselves; without it that is off. */
+  overridesFile?: string;
 }
 
 /**
@@ -152,8 +172,11 @@ export class AdminAuth {
   private sleep: (ms: number) => Promise<void>;
   private clock: () => number;
 
+  private overridesFile: string | null;
+
   constructor(file: string, options: AdminAuthOptions = {}) {
     this.file = file;
+    this.overridesFile = options.overridesFile ?? null;
     this.maxSources = options.maxSources ?? 10_000;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.clock = options.now ?? Date.now;
@@ -161,12 +184,75 @@ export class AdminAuth {
     this.cleanLane = new Lane(this.clock, this.sleep);
   }
 
-  private read(): CredentialFile {
+  /** The credentials file as the operator wrote it (without self-chosen passwords). */
+  private readBase(): CredentialFile {
     try {
       return JSON.parse(fs.readFileSync(this.file, 'utf8')) as CredentialFile;
     } catch {
       return {};
     }
+  }
+
+  private readOverrides(): PasswordOverride[] {
+    if (!this.overridesFile) return [];
+    try {
+      const list = (JSON.parse(fs.readFileSync(this.overridesFile, 'utf8')) as { overrides?: unknown }).overrides;
+      if (!Array.isArray(list)) return [];
+      return list.filter(
+        (o): o is PasswordOverride =>
+          typeof o?.scope === 'string' && typeof o?.user === 'string' && typeof o?.baseHash === 'string' && typeof o?.hash === 'string',
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  /** Effective credentials: the operator's file with self-chosen passwords applied. */
+  private read(): CredentialFile {
+    const base = this.readBase();
+    const overrides = this.readOverrides();
+    if (overrides.length === 0) return base;
+    const apply = (scope: string, list: Credential[] | undefined) =>
+      list?.map((c) => {
+        const o = overrides.find((x) => x.scope === scope && x.user === c?.user && x.baseHash === c?.hash);
+        return o ? { user: c.user, hash: o.hash } : c;
+      });
+    const surveys: Record<string, Credential[]> = {};
+    for (const [id, list] of Object.entries(base.surveys ?? {})) surveys[id] = apply(id, list) ?? [];
+    return { global: apply('global', base.global), surveys };
+  }
+
+  /**
+   * Lets a signed-in administrator replace their own password. `scope` is "global" or the survey
+   * id the sign-in was checked for; only that one entry changes. The current password is checked
+   * again, the new one needs MIN_PASSWORD_LENGTH characters.
+   */
+  async changeOwnPassword(header: string | undefined, scope: string, current: string, next: string, repeat: string): Promise<PasswordChangeResult> {
+    if (!this.overridesFile) return 'unavailable';
+    if (!header?.startsWith('Basic ')) return 'not_found';
+    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    const sep = decoded.indexOf(':');
+    if (sep < 1) return 'not_found';
+    const user = decoded.slice(0, sep);
+    const base = this.readBase();
+    const list = scope === 'global' ? base.global : base.surveys?.[scope];
+    const entry = list?.find((c) => typeof c?.user === 'string' && typeof c?.hash === 'string' && safeEqualText(c.user, user));
+    if (!entry) return 'not_found';
+    const overrides = this.readOverrides();
+    const own = (o: PasswordOverride) => o.scope === scope && o.user === entry.user;
+    const effective = overrides.find((o) => own(o) && o.baseHash === entry.hash)?.hash ?? entry.hash;
+    const ok = await this.withSlot(() => verifyPassword(current, effective));
+    if (ok === 'busy') return 'busy';
+    if (ok !== true) return 'wrong_current';
+    if (next !== repeat) return 'mismatch';
+    if (next.length < MIN_PASSWORD_LENGTH) return 'too_short';
+    if (next.length > MAX_PASSWORD_LENGTH) return 'too_long';
+    if (next === current) return 'same';
+    const updated = [...overrides.filter((o) => !own(o)), { scope, user: entry.user, baseHash: entry.hash, hash: hashPassword(next) }];
+    const tmp = `${this.overridesFile}.${randomBytes(6).toString('hex')}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ overrides: updated }, null, 2) + '\n', { mode: 0o600 });
+    fs.renameSync(tmp, this.overridesFile);
+    return 'changed';
   }
 
   private recentGlobalFailures(now: number): number {

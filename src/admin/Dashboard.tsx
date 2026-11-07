@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { validateDefinition } from '../../shared/schema.ts';
 import { Shell } from '../components/Shell.tsx';
 import { adminFetch } from './http.ts';
+import { ChangePassword } from './Password.tsx';
 import { confirmSurveyStatus, reopenBlocked, setSurveyClosed } from './surveyStatus.ts';
 
 interface AppInfo {
@@ -107,6 +108,7 @@ export function Dashboard() {
           <Databases />
           <InstallSurvey act={act} />
           <UploadStatic act={act} limits={data.limits} existing={data.apps} appDomain={data.appDomain} />
+          <ChangePassword endpoint="/admin/api/password" />
           {data.themes.length > 0 && (
             <p className="admin-note">Verfügbare Designs (Themes): {data.themes.join(', ')}</p>
           )}

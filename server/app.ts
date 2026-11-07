@@ -678,6 +678,35 @@ export function createApp(deps: AppDeps) {
   /** Formats of the data endpoint; anything else is refused before any data is read. */
   const DATA_FORMATS = new Set(['json', 'json-file', 'csv', 'codebook.csv', 'rds']);
 
+  const PASSWORD_ERRORS: Record<string, [number, string]> = {
+    wrong_current: [403, 'Das bisherige Passwort stimmt nicht.'],
+    mismatch: [422, 'Die beiden neuen Passwörter stimmen nicht überein.'],
+    too_short: [422, 'Das neue Passwort braucht mindestens 16 Zeichen.'],
+    too_long: [422, 'Das neue Passwort darf höchstens 256 Zeichen haben.'],
+    same: [422, 'Das neue Passwort muss sich vom bisherigen unterscheiden.'],
+    busy: [429, 'Gerade viele Anmeldeprüfungen – bitte gleich noch einmal versuchen.'],
+    not_found: [403, 'Für diese Anmeldung kann das Passwort hier nicht geändert werden.'],
+    unavailable: [503, 'Passwortänderung ist auf diesem Server nicht eingerichtet.'],
+  };
+
+  async function handlePasswordChange(req: IncomingMessage, res: ServerResponse, method: string, scope: string): Promise<void> {
+    if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
+    if (!sameOriginWrite(req, res)) return;
+    const b = await readJson(req, res, 4096);
+    if (!b.ok) return;
+    const v = (b.value ?? {}) as { current?: unknown; next?: unknown; repeat?: unknown };
+    if (typeof v.current !== 'string' || typeof v.next !== 'string' || typeof v.repeat !== 'string') {
+      return sendJson(res, 400, { error: 'current, next and repeat are required' });
+    }
+    const result = await auth.changeOwnPassword(req.headers.authorization, scope, v.current, v.next, v.repeat);
+    if (result === 'changed') {
+      log(`administrator password changed (${scope === 'global' ? 'global' : 'survey ' + scope})`);
+      return sendJson(res, 200, { status: 'changed' });
+    }
+    const [status, message] = PASSWORD_ERRORS[result];
+    return sendJson(res, status, { error: result, message });
+  }
+
   async function handleAdminApi(req: IncomingMessage, res: ServerResponse, parts: string[], method: string): Promise<void> {
     // parts: ['admin', 'api', ...]
     const area = parts[2];
@@ -694,6 +723,11 @@ export function createApp(deps: AppDeps) {
       const url = new URL(req.url ?? '/', 'http://localhost');
       const courseParam = url.searchParams.get('course') || undefined;
       if (courseParam && !store.courseExists(def.id, courseParam)) return sendJson(res, 404, { error: 'unknown course' });
+
+      if (parts[4] === 'password' && parts.length === 5) {
+        // Own password of the signed-in administrator (survey sign-in: the entry of this survey).
+        return await handlePasswordChange(req, res, method, role === 'global' ? 'global' : def.id);
+      }
 
       if (parts[4] === 'data' && parts.length === 5) {
         // Full data of this one survey (its own database only): single responses with free
@@ -735,6 +769,9 @@ export function createApp(deps: AppDeps) {
         // Close or reopen the whole survey. Closing also closes every course: all codes expire.
         if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
         if (!sameOriginWrite(req, res)) return;
+        // Surveys with courses are closed course by course; closing the whole app (every course
+        // at once) is left to the global administration.
+        if (def.accessCodes && role !== 'global') return sendJson(res, 403, { error: 'close_per_course' });
         const b = await readJson(req, res, MAX_BODY);
         if (!b.ok) return;
         const closed = (b.value as { closed?: unknown } | null)?.closed;
@@ -826,7 +863,6 @@ export function createApp(deps: AppDeps) {
         if (method === 'DELETE' && parts.length === 6) {
           const withResponses = url.searchParams.get('withResponses') === '1';
           // Deleting answers is reserved for the global administration (like purging a survey).
-          if (withResponses && role !== 'global') return sendJson(res, 403, { error: 'only the global administration can delete answers' });
           if (withResponses && url.searchParams.get('confirm') !== current.label) {
             return sendJson(res, 400, { error: 'confirmation does not match the course name' });
           }
@@ -944,6 +980,8 @@ export function createApp(deps: AppDeps) {
       sendJson(res, 200, { role });
       return;
     }
+
+    if (area === 'password' && parts.length === 3) return await handlePasswordChange(req, res, method, 'global');
 
     if (area === 'databases' && parts.length === 3 && method === 'GET') {
       // Metadata of every app's own database (global administration only).

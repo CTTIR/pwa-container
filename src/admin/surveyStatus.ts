@@ -38,7 +38,7 @@ export function confirmSurveyStatus(title: string, close: boolean, withCourses: 
       'Die Umfrage nimmt dann wieder Antworten an.' +
       (withCourses
         ? ' Die Kurse bleiben aber abgeschlossen und ihre QR-Codes abgelaufen, bis ein Kurs einzeln ' +
-          `(„Wieder öffnen“ unter „Kurse und Einmal-Codes“; nur bei weniger als ${minGroup} Antworten möglich) wieder öffnen.`
+          `(„Für diesen Kurs wieder öffnen“ unter „Kurse und Einmal-Codes“; nur bei weniger als ${minGroup} Antworten möglich) wieder öffnen.`
         : '');
   return window.confirm(text);
 }

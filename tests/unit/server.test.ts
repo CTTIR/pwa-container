@@ -45,7 +45,7 @@ beforeAll(async () => {
   );
   store = new Store(dataDir);
   const registry = new AppRegistry(store, surveysDir, dataDir, () => {});
-  const handler = createApp({ store, registry, auth: new AdminAuth(credFile), distDir, themesDir: path.join(root, 'themes'), log: () => {} });
+  const handler = createApp({ store, registry, auth: new AdminAuth(credFile, { overridesFile: path.join(root, 'admin-passwords.json') }), distDir, themesDir: path.join(root, 'themes'), log: () => {} });
   server = http.createServer((req, res) => void handler(req, res));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -462,6 +462,23 @@ describe('courses and single-use codes', () => {
     expect(r.status).toBe(409);
   });
 
+  it('lets the survey administration close single courses, but not the whole survey', async () => {
+    const leadWrite = { Authorization: CODED_LEAD, ...WRITE };
+    const whole = await fetch(results('status'), { method: 'POST', headers: leadWrite, body: JSON.stringify({ closed: true }) });
+    expect(whole.status).toBe(403);
+    const created = await fetch(results('courses'), {
+      method: 'POST',
+      headers: leadWrite,
+      body: JSON.stringify({ label: 'Kurs der Kursleitung', eventDate: '2027-02-01', count: 1 }),
+    });
+    const { course } = (await created.json()) as { course: { id: string } };
+    const closed = await fetch(results(`courses/${course.id}`), { method: 'PATCH', headers: leadWrite, body: JSON.stringify({ closed: true }) });
+    expect(closed.status).toBe(200);
+    const status = (await (await fetch(results('summary'), { headers: { Authorization: ADMIN } })).json()) as { survey: { status: string } };
+    expect(status.survey.status).toBe('open'); // the survey itself stays open for the other courses
+    expect((await fetch(results(`courses/${course.id}`), { method: 'DELETE', headers: leadWrite })).status).toBe(200);
+  });
+
   it('closing the survey expires every code', async () => {
     const second = await fetch(results('courses'), {
       method: 'POST',
@@ -480,17 +497,19 @@ describe('courses and single-use codes', () => {
     expect((await post(sid(30), extra)).status).toBe(409);
   });
 
-  it('deletes a course with its responses only for the global administration and after typing its name', async () => {
+  it('deletes a course with its responses only after typing its name (also the survey administration)', async () => {
     expect((await fetch(results(`courses/${courseId}`), { method: 'DELETE', headers: adminWrite })).status).toBe(409);
-    const asLead = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
+    const leadWrite = { Authorization: CODED_LEAD, ...WRITE };
+    expect((await fetch(results(`courses/${courseId}?withResponses=1&confirm=wrong`), { method: 'DELETE', headers: leadWrite })).status).toBe(400);
+    // another survey's administration cannot
+    const foreign = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
       method: 'DELETE',
-      headers: { Authorization: CODED_LEAD, ...WRITE },
+      headers: { Authorization: LEAD, ...WRITE },
     });
-    expect(asLead.status).toBe(403);
-    expect((await fetch(results(`courses/${courseId}?withResponses=1&confirm=wrong`), { method: 'DELETE', headers: adminWrite })).status).toBe(400);
+    expect(foreign.status).toBe(403);
     const ok = await fetch(results(`courses/${courseId}?withResponses=1&confirm=${encodeURIComponent('Instruktorenkurs Neuwied')}`), {
       method: 'DELETE',
-      headers: adminWrite,
+      headers: leadWrite,
     });
     expect(ok.status).toBe(200);
     expect(store.count('coded-survey')).toBe(0);
@@ -674,5 +693,56 @@ describe('per-app databases and data access', () => {
     expect(migrated.databaseInfo('beta')).toMatchObject({ responses: 1, courses: 0 });
     migrated.close();
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('own password change', () => {
+  it('replaces only the signed-in user\'s hash; the operator can reset it in the credentials file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-container-pw-'));
+    const cred = path.join(dir, 'admins.json');
+    const overrides = path.join(dir, 'admin-passwords.json');
+    const write = (leadHash: string) =>
+      fs.writeFileSync(cred, JSON.stringify({ global: [{ user: 'boss', hash: hashPassword('boss password 123456') }], surveys: { s1: [{ user: 'lead', hash: leadHash }], s2: [{ user: 'lead', hash: hashPassword('other survey pass 1') }] } }));
+    write(hashPassword('first lead password'));
+    const auth = new AdminAuth(cred, { overridesFile: overrides, sleep: async () => {} });
+    const basic = (u: string, p: string) => 'Basic ' + Buffer.from(`${u}:${p}`).toString('base64');
+    const hdr = basic('lead', 'first lead password');
+    expect(await auth.changeOwnPassword(hdr, 's1', 'wrong password here', 'second lead password', 'second lead password')).toBe('wrong_current');
+    expect(await auth.changeOwnPassword(hdr, 's1', 'first lead password', 'short', 'short')).toBe('too_short');
+    expect(await auth.changeOwnPassword(hdr, 's1', 'first lead password', 'second lead password', 'second lead passwort')).toBe('mismatch');
+    expect(await auth.changeOwnPassword(hdr, 's1', 'first lead password', 'first lead password', 'first lead password')).toBe('same');
+    expect(await auth.changeOwnPassword(basic('nobody', 'x'), 's1', 'x', 'second lead password', 'second lead password')).toBe('not_found');
+    expect(await auth.changeOwnPassword(hdr, 's1', 'first lead password', 'second lead password', 'second lead password')).toBe('changed');
+    expect(await auth.authenticate(basic('lead', 'second lead password'), 's1', 'a')).toBe('survey');
+    expect(await auth.authenticate(basic('lead', 'first lead password'), 's1', 'a')).toBeNull();
+    // the same user name of another survey and the global admin are untouched
+    expect(await auth.authenticate(basic('lead', 'other survey pass 1'), 's2', 'a')).toBe('survey');
+    expect(await auth.authenticate(basic('boss', 'boss password 123456'), undefined, 'a')).toBe('global');
+    expect((fs.statSync(overrides).mode & 0o777).toString(8)).toBe('600');
+    // the overrides file cannot add users: an entry for an unknown user has no effect
+    const list = JSON.parse(fs.readFileSync(overrides, 'utf8'));
+    list.overrides.push({ scope: 'global', user: 'intruder', baseHash: 'x', hash: hashPassword('intruder password 1') });
+    fs.writeFileSync(overrides, JSON.stringify(list));
+    expect(await auth.authenticate(basic('intruder', 'intruder password 1'), undefined, 'a')).toBeNull();
+    // operator reset: a new hash in the credentials file wins over the self-chosen password
+    write(hashPassword('reset by operator 1'));
+    expect(await auth.authenticate(basic('lead', 'reset by operator 1'), 's1', 'a')).toBe('survey');
+    expect(await auth.authenticate(basic('lead', 'second lead password'), 's1', 'a')).toBeNull();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('changes the survey administration\'s password over the API, only with the admin page header', async () => {
+    const url = `${base}/admin/api/results/coded-survey/password`;
+    const body = JSON.stringify({ current: 'coded survey lead password', next: 'brand new coded lead pw', repeat: 'brand new coded lead pw' });
+    expect((await fetch(url, { method: 'POST', headers: { Authorization: CODED_LEAD, 'Content-Type': 'application/json' }, body })).status).toBe(403);
+    const wrong = JSON.stringify({ current: 'not the password at all', next: 'brand new coded lead pw', repeat: 'brand new coded lead pw' });
+    expect((await fetch(url, { method: 'POST', headers: { Authorization: CODED_LEAD, ...WRITE }, body: wrong })).status).toBe(403);
+    // another survey's administration cannot change it
+    expect((await fetch(url, { method: 'POST', headers: { Authorization: LEAD, ...WRITE }, body })).status).toBe(403);
+    const ok = await fetch(url, { method: 'POST', headers: { Authorization: CODED_LEAD, ...WRITE }, body });
+    expect(ok.status).toBe(200);
+    const fresh = 'Basic ' + Buffer.from('codedlead:brand new coded lead pw').toString('base64');
+    expect((await fetch(`${base}/admin/api/results/coded-survey/summary`, { headers: { Authorization: fresh } })).status).toBe(200);
+    expect((await fetch(`${base}/admin/api/results/coded-survey/summary`, { headers: { Authorization: CODED_LEAD } })).status).toBe(401);
   });
 });

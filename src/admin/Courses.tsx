@@ -13,8 +13,6 @@ interface Props {
   courses: CourseInfo[];
   /** Smallest group whose results are shown (minimum group size 5). */
   minGroup: number;
-  /** Only the global administration may delete answers. */
-  canDeleteAnswers: boolean;
   onChanged: () => Promise<void> | void;
   onSheet: (sheet: CodeSheet) => void;
 }
@@ -65,7 +63,7 @@ function csvCell(v: string): string {
 type CodesState = CodeInfo[] | 'loading' | 'error';
 
 /** Courses (events) and their single-use access codes. */
-export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChanged, onSheet }: Props) {
+export function Courses({ surveyId, courses, minGroup, onChanged, onSheet }: Props) {
   const [draft, setDraft] = useState<EventDraft>(EMPTY_DRAFT);
   const [count, setCount] = useState(30);
   const [more, setMore] = useState<Record<string, number>>({});
@@ -154,8 +152,9 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
 
   const setClosed = (c: CourseInfo, closed: boolean) => {
     const text = closed
-      ? `Kurs „${eventLine(c)}“ abschließen?\n\n` +
-        'Ein abgeschlossener Kurs nimmt keine Antworten mehr an; alle seine QR-Codes sind damit abgelaufen. ' +
+      ? `Umfrage für den Kurs „${eventLine(c)}“ schließen?\n\n` +
+        'Schließen beendet die Umfrage nur für diesen Kurs: keine weiteren Antworten, alle seine QR-Codes sind abgelaufen. ' +
+        'Andere Kurse und die Umfrage insgesamt laufen weiter. ' +
         'Auch Antworten, die noch auf Handys ohne Netz warten, werden danach abgelehnt – am besten erst abschließen, wenn alle ' +
         'die Danke-Seite gesehen haben, oder am nächsten Tag.\n\n' +
         (c.responsesBand === 'atLeastMin'
@@ -164,7 +163,7 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
           : `Der Kurs hat weniger als ${minGroup} Antworten: Er kann noch wieder geöffnet werden, ` +
             `Ergebnisse werden nicht gezeigt. Hat ein abgeschlossener Kurs ${minGroup} oder mehr Antworten, ist das Abschließen endgültig ` +
             '(Ergebnisse freigegeben, kein Wiederöffnen).')
-      : `Kurs „${eventLine(c)}“ wieder öffnen?\n\n` +
+      : `Umfrage für den Kurs „${eventLine(c)}“ wieder öffnen?\n\n` +
         'Nicht gesperrte, noch unbenutzte Codes gelten dann wieder (Antworten nur, solange auch die Umfrage offen ist). ' +
         `Sobald der Kurs erneut abgeschlossen wird und dann mindestens ${minGroup} Antworten hat, ist das endgültig.`;
     if (!window.confirm(text)) return;
@@ -197,8 +196,8 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
         Für jede Veranstaltung einen Kurs mit Namen und Datum anlegen, Einmal-Codes erzeugen und als QR-Zettel ausdrucken; Name und
         Datum stehen auf jedem Zettel. Nach dem Absenden ist ein Code verbraucht. Antworten werden nur dem Kurs zugeordnet, nie dem
         Code; ob ein bestimmter Code benutzt wurde, zeigt die Verwaltung bewusst nicht an. Zettel zufällig austeilen und nicht
-        notieren, wer welchen Zettel bekommt. Nach der Veranstaltung „Kurs abschließen“: Danach nimmt der Kurs keine Antworten mehr
-        an und alle seine Codes sind abgelaufen. Hat er mindestens {minGroup} Antworten, werden seine Ergebnisse freigegeben – dann ist
+        notieren, wer welchen Zettel bekommt. Nach der Veranstaltung „Umfrage für diesen Kurs schließen“: Danach nimmt der Kurs keine Antworten
+        mehr an und alle seine Codes sind abgelaufen; andere Kurse laufen weiter. Hat er mindestens {minGroup} Antworten, werden seine Ergebnisse freigegeben – dann ist
         das Abschließen endgültig, der Kurs kann nicht wieder geöffnet werden. Solange ein Kurs offen ist, zeigt die Verwaltung nur, ob
         schon {minGroup} Antworten da sind – keine genauen Zahlen, damit sich einzelne Abgaben nicht beobachten lassen.
       </p>
@@ -294,19 +293,19 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
                     </span>
                   ) : (
                     <button className="btn btn-secondary" disabled={busy} onClick={() => setClosed(c, false)}>
-                      Wieder öffnen
+                      Für diesen Kurs wieder öffnen
                     </button>
                   )
                 ) : (
                   <button className="btn btn-primary" disabled={busy} onClick={() => setClosed(c, true)}>
-                    Kurs abschließen
+                    Umfrage für diesen Kurs schließen
                   </button>
                 )}
                 {c.responses === 0 && c.closed ? (
                   <button className="btn btn-link" disabled={busy} onClick={() => remove(c)}>
                     Löschen
                   </button>
-                ) : canDeleteAnswers ? (
+                ) : (
                   <button
                     className="btn btn-link link-danger"
                     disabled={busy}
@@ -314,7 +313,7 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
                   >
                     Kurs mit allen Antworten löschen …
                   </button>
-                ) : null}
+                )}
               </div>
 
               {editing?.id === c.id && (

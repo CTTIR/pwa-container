@@ -3,6 +3,7 @@ import { Inline } from '../components/RichText.tsx';
 import { Shell } from '../components/Shell.tsx';
 import { Courses, PrintSheet, type CodeSheet } from './Courses.tsx';
 import { DataExplorer } from './Data.tsx';
+import { ChangePassword } from './Password.tsx';
 import { downloadJson, downloadSummaryXlsx, downloadXlsx } from './exportXlsx.ts';
 import { eventLine } from './format.ts';
 import { adminFetch } from './http.ts';
@@ -170,22 +171,32 @@ export function Results({ surveyId }: { surveyId: string }) {
         <div>Version {survey.version}</div>
       </div>
 
-      <div className="survey-status-row">
-        {!final && (
-          <button className={closed ? 'btn btn-secondary' : 'btn btn-danger'} disabled={busy} onClick={() => void toggleSurvey()}>
-            {closed ? 'Umfrage wieder öffnen' : 'Umfrage schließen'}
-          </button>
-        )}
-        <span className="survey-status-hint">
-          {final
-            ? `Die Umfrage ist endgültig geschlossen: Sie hat mindestens ${k} Antworten, die Ergebnisse sind freigegeben.`
-            : closed
-              ? 'Die Umfrage nimmt keine Antworten an.'
-              : withCodes
-                ? 'Schließen beendet die Umfrage: keine weiteren Antworten, alle Kurse abgeschlossen, alle QR-Codes abgelaufen.'
+      {withCodes ? (
+        // Surveys with courses are opened and closed per course; closing the whole app is left to
+        // the global administration (dashboard).
+        <div className="survey-status-row">
+          <span className="survey-status-hint">
+            {closed
+              ? 'Die Umfrage wurde von der Verwaltung insgesamt geschlossen und nimmt keine Antworten an.'
+              : 'Antworten werden je Kurs angenommen. Zum Beenden beim jeweiligen Kurs unten „Umfrage für diesen Kurs schließen“ wählen: keine weiteren Antworten für diesen Kurs, andere Kurse laufen weiter.'}
+          </span>
+        </div>
+      ) : (
+        <div className="survey-status-row">
+          {!final && (
+            <button className={closed ? 'btn btn-secondary' : 'btn btn-danger'} disabled={busy} onClick={() => void toggleSurvey()}>
+              {closed ? 'Umfrage wieder öffnen' : 'Umfrage schließen'}
+            </button>
+          )}
+          <span className="survey-status-hint">
+            {final
+              ? `Die Umfrage ist endgültig geschlossen: Sie hat mindestens ${k} Antworten, die Ergebnisse sind freigegeben.`
+              : closed
+                ? 'Die Umfrage nimmt keine Antworten an.'
                 : `Schließen beendet die Umfrage: keine weiteren Antworten${data.released ? ' – endgültig, da schon mindestens ' + k + ' Antworten vorliegen' : ''}.`}
-        </span>
-      </div>
+          </span>
+        </div>
+      )}
 
       {message && (
         <div className="panel panel-done" role="status">
@@ -205,7 +216,7 @@ export function Results({ surveyId }: { surveyId: string }) {
         <p>
           Ergebnisse werden nur für abgeschlossene Gruppen mit mindestens {k} Antworten gezeigt.
           {withCodes
-            ? ` Ein Kurs wird erst freigegeben, wenn er abgeschlossen ist („Kurs abschließen“ oder „Umfrage schließen“) und mindestens ${k} Antworten hat. Die Freigabe ist endgültig: Ein freigegebener Kurs kann nicht wieder geöffnet werden.`
+            ? ` Ein Kurs wird erst freigegeben, wenn er abgeschlossen ist („Umfrage für diesen Kurs schließen“) und mindestens ${k} Antworten hat. Die Freigabe ist endgültig: Ein freigegebener Kurs kann nicht wieder geöffnet werden.`
             : ` So lässt sich keine Antwort einer einzelnen Person zuordnen. Ab ${k} Antworten ist das Schließen der Umfrage endgültig.`}{' '}
           Antworten tragen weder Datum noch Uhrzeit; Freitexte stehen getrennt von den Bewertungen und in zufälliger Reihenfolge.
           {' Diese Freigaberegeln gelten für die Zusammenfassung unten. Im Bereich „Datenbank“ stehen alle Einzelantworten dieser Umfrage zur Verfügung.'}
@@ -276,12 +287,12 @@ export function Results({ surveyId }: { surveyId: string }) {
           surveyId={surveyId}
           courses={courses}
           minGroup={k}
-          canDeleteAnswers={data.role === 'global'}
           onChanged={() => load()}
           onSheet={setSheet}
         />}
 
       <DataExplorer surveyId={surveyId} />
+      <ChangePassword endpoint={api(surveyId, 'password')} />
 
       {shown && (
         <>

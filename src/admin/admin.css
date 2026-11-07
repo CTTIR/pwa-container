@@ -685,3 +685,22 @@
 .data-compare td {
   overflow-wrap: anywhere;
 }
+
+/* own password */
+.password-summary {
+  cursor: pointer;
+  list-style: revert;
+}
+
+.password-form {
+  display: grid;
+  gap: 10px;
+  max-width: 28rem;
+  margin-top: 8px;
+}
+
+.password-form label {
+  display: grid;
+  gap: 4px;
+  font-weight: 600;
+}

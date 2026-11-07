@@ -53,8 +53,10 @@ Survey responses are anonymous by construction:
   (`/admin/api/results/<id>/data`). Rows come in random order and without any date, but whoever
   holds these credentials can watch the number of responses grow and may recognise people in small
   courses. State this in the survey's privacy notice.
-- **Closing the survey:** closing it (administration or organiser entry) stops all answers and
-  expires every code, because all courses close with it.
+- **Closing:** a survey with courses is closed course by course ("Umfrage für diesen Kurs
+  schließen"): that course takes no more answers and its codes expire, while the other courses go
+  on. Closing the whole survey (every course at once) is left to the global administration. A
+  survey without courses is closed as a whole, also from its organiser entry.
 
 ## How it works
 
@@ -177,8 +179,12 @@ Create a random password and its hash with `docker exec pwa-container node serve
 or hash your own (16 characters or more) with
 `printf '%s' 'long password' | docker exec -i pwa-container node server/cli.ts hash-password`.
 Global users manage everything. Survey (or app) users see only that survey's results, courses,
-codes and single responses (the "Datenbank" section), or that app's records. Deleting responses is
-reserved for the global administration. Survey users sign in at `<label>.APP_DOMAIN/admin` or
+codes and single responses (the "Datenbank" section), or that app's records. Survey users may
+delete a course together with its responses (after typing the course name, e.g. a test course);
+purging all responses of a survey is reserved for the global administration. Signed-in
+administrators can change their own password on their page; the new hash goes to
+`admin-passwords.json` in the data volume (`PASSWORD_OVERRIDES_FILE`), the credentials file stays
+read-only, and a new hash set there by the operator takes precedence. Survey users sign in at `<label>.APP_DOMAIN/admin` or
 `ADMIN_HOST/admin/results/<id>`. The file is re-read on
 every request, so changes apply without a restart.
 

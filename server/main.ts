@@ -19,7 +19,7 @@ const registry = new AppRegistry(store, config.surveysDir, config.dataDir, log, 
   reservedLabels: [...config.reservedLabels, config.adminHost.endsWith('.' + config.appDomain) ? config.adminHost.split('.')[0] : ''].filter(Boolean),
   onChange: createTraefikWriter(config, log),
 });
-const auth = new AdminAuth(config.credentialsFile);
+const auth = new AdminAuth(config.credentialsFile, { overridesFile: config.passwordOverridesFile });
 const handler = createApp({
   store,
   registry,
