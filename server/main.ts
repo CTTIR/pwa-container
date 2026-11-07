@@ -32,8 +32,18 @@ const handler = createApp({
 if (config.appDomain) log(`apps are served on <subdomain>.${config.appDomain}; administration on ${config.adminHost || '(any other host)'}`);
 
 const server = http.createServer((req, res) => {
-  void handler(req, res);
+  handler(req, res).catch((err: unknown) => {
+    log(`request failed: ${(err as Error)?.message ?? String(err)}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Internal error');
+    } else {
+      res.destroy();
+    }
+  });
 });
+// Backstop: an unexpected rejection is logged instead of ending the process.
+process.on('unhandledRejection', (reason) => log(`unhandled rejection: ${(reason as Error)?.message ?? String(reason)}`));
 server.requestTimeout = 60_000;
 server.headersTimeout = 15_000;
 server.maxConnections = 512;

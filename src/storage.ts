@@ -44,9 +44,15 @@ function remove(key: string, which: Area = 'local'): void {
   }
 }
 
-function keys(): string[] {
+/**
+ * Where drafts live. Surveys with access codes keep drafts in sessionStorage: they survive a
+ * reload but disappear with the tab, so the next person on a shared device never sees them.
+ */
+let draftArea: Area = 'local';
+
+function keys(which: Area = 'local'): string[] {
   try {
-    const ls = window.localStorage;
+    const ls = area(which);
     const out: string[] = [];
     for (let i = 0; i < ls.length; i++) {
       const k = ls.key(i);
@@ -79,17 +85,21 @@ export interface Outbox {
 
 const draftKey = (id: string, version: number) => `${PREFIX}:draft:${id}:v${version}`;
 const outboxKey = (id: string) => `${PREFIX}:outbox:${id}`;
+/** Pending submissions per survey, keyed by submission id (several people on one device). */
+const outboxesKey = (id: string) => `${PREFIX}:outboxes:${id}`;
+/** A code scanned from a link, kept for this tab until the participation starts. */
+const scannedKey = (id: string) => `${PREFIX}:scanned:${id}`;
 const doneKey = (id: string) => `${PREFIX}:done:${id}`;
 const definitionKey = (id: string) => `${PREFIX}:definition:${id}`;
 
 const freshExpiry = () => Date.now() + KEEP_MS;
 const expired = (v: { expiresAt?: unknown } | null) => !!v && typeof v.expiresAt === 'number' && v.expiresAt <= Date.now();
 
-function loadExpiring<T extends { expiresAt?: number }>(key: string): T | null {
-  const v = get<T>(key);
+function loadExpiring<T extends { expiresAt?: number }>(key: string, which: Area = 'local'): T | null {
+  const v = get<T>(key, which);
   if (!v || typeof v !== 'object') return null;
   if (expired(v)) {
-    remove(key);
+    remove(key, which);
     return null;
   }
   return v;
@@ -100,28 +110,32 @@ function escapeRegExp(s: string): string {
 }
 
 export const storage = {
-  loadDraft: (id: string, version: number) => loadExpiring<Draft>(draftKey(id, version)),
+  /** Switches drafts to sessionStorage (surveys with access codes) or back to localStorage. */
+  useSessionDrafts: (on: boolean) => {
+    draftArea = on ? 'session' : 'local';
+  },
+  loadDraft: (id: string, version: number) => loadExpiring<Draft>(draftKey(id, version), draftArea),
   /**
    * Saves a draft. An existing draft under the same key keeps its expiry; otherwise `expiresAt`
    * (e.g. carried over from an older version's draft) or a fresh one is used.
    */
   saveDraft: (id: string, version: number, draft: Omit<Draft, 'expiresAt'>, expiresAt?: number) => {
     const key = draftKey(id, version);
-    const previous = get<Draft>(key);
+    const previous = get<Draft>(key, draftArea);
     const keep = previous && typeof previous.expiresAt === 'number' && !expired(previous) ? previous.expiresAt : undefined;
-    set(key, { ...draft, expiresAt: keep ?? expiresAt ?? freshExpiry() });
+    set(key, { ...draft, expiresAt: keep ?? expiresAt ?? freshExpiry() }, draftArea);
   },
-  clearDraft: (id: string, version: number) => remove(draftKey(id, version)),
+  clearDraft: (id: string, version: number) => remove(draftKey(id, version), draftArea),
   /** Drafts of this survey saved under other definition versions, newest version first. */
   otherDrafts: (id: string, exceptVersion: number): { version: number; draft: Draft }[] => {
     const pattern = new RegExp(`^${escapeRegExp(`${PREFIX}:draft:${id}:v`)}(\\d+)$`);
     const out: { version: number; draft: Draft }[] = [];
-    for (const k of keys()) {
+    for (const k of keys(draftArea)) {
       const m = k.match(pattern);
       if (!m) continue;
       const version = Number(m[1]);
       if (version === exceptVersion) continue;
-      const draft = loadExpiring<Draft>(k);
+      const draft = loadExpiring<Draft>(k, draftArea);
       if (draft) out.push({ version, draft });
     }
     return out.sort((a, b) => b.version - a.version);
@@ -129,11 +143,48 @@ export const storage = {
   /** Removes the drafts of every version of this survey. */
   clearAllDrafts: (id: string) => {
     const prefix = `${PREFIX}:draft:${id}:v`;
-    for (const k of keys()) if (k.startsWith(prefix)) remove(k);
+    // Both areas, so nothing is left behind when a survey switches between them.
+    for (const which of ['local', 'session'] as const) for (const k of keys(which)) if (k.startsWith(prefix)) remove(k, which);
   },
-  loadOutbox: (id: string) => loadExpiring<Outbox>(outboxKey(id)),
-  saveOutbox: (id: string, outbox: Outbox) => set(outboxKey(id), { ...outbox, expiresAt: outbox.expiresAt ?? freshExpiry() }),
-  clearOutbox: (id: string) => remove(outboxKey(id)),
+  /** All pending submissions of this survey on this device (expired ones are dropped). */
+  listOutboxes: (id: string): Outbox[] => {
+    const map = get<Record<string, Outbox>>(outboxesKey(id)) ?? {};
+    // Migrate the former single outbox.
+    const legacy = loadExpiring<Outbox>(outboxKey(id));
+    if (legacy?.submissionId) {
+      map[legacy.submissionId] = legacy;
+      remove(outboxKey(id));
+      set(outboxesKey(id), map);
+    }
+    const live = Object.values(map).filter((o) => o && typeof o.submissionId === 'string' && !expired(o));
+    if (live.length !== Object.keys(map).length) {
+      if (live.length) set(outboxesKey(id), Object.fromEntries(live.map((o) => [o.submissionId, o])));
+      else remove(outboxesKey(id));
+    }
+    return live;
+  },
+  /** One pending submission (the first), if any. */
+  loadOutbox: (id: string): Outbox | null => storage.listOutboxes(id)[0] ?? null,
+  saveOutbox: (id: string, outbox: Outbox) => {
+    const map = get<Record<string, Outbox>>(outboxesKey(id)) ?? {};
+    map[outbox.submissionId] = { ...outbox, expiresAt: outbox.expiresAt ?? freshExpiry() };
+    set(outboxesKey(id), map);
+  },
+  /** Removes one pending submission, or all of them without a submission id. */
+  clearOutbox: (id: string, submissionId?: string) => {
+    remove(outboxKey(id));
+    if (!submissionId) {
+      remove(outboxesKey(id));
+      return;
+    }
+    const map = get<Record<string, Outbox>>(outboxesKey(id)) ?? {};
+    delete map[submissionId];
+    if (Object.keys(map).length) set(outboxesKey(id), map);
+    else remove(outboxesKey(id));
+  },
+  /** The code scanned in this tab survives a reload until the participation starts. */
+  saveScanned: (id: string, code: string | null) => (code ? set(scannedKey(id), code, 'session') : remove(scannedKey(id), 'session')),
+  loadScanned: (id: string): string | null => get<string>(scannedKey(id), 'session'),
   /**
    * `sessionOnly` (surveys with access codes): the flag lives in sessionStorage only, and a
    * lasting flag from an older app version is removed.

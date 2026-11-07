@@ -94,7 +94,9 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const outboxRef = useRef<Outbox | null>(null);
   const sendingRef = useRef(false);
   /** A code from a scanned link that has not been used for a participation yet. */
-  const pendingLinkCode = useRef<string | null>(linkCode);
+  // A scanned code survives a reload of this tab until the participation starts.
+  const pendingLinkCode = useRef<string | null>(linkCode ?? storage.loadScanned(surveyId));
+  if (linkCode) storage.saveScanned(surveyId, linkCode);
   const focusHeading = useRef(false);
 
   const def = survey?.definition;
@@ -117,6 +119,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     setCourseValue(c);
   };
   const adoptDefinition = (data: SurveyResponse) => {
+    // Surveys with codes keep drafts only for this tab (shared devices).
+    storage.useSessionDrafts(!!data.definition.accessCodes);
     live.current.def = data.definition;
     document.title = data.definition.title;
     document.documentElement.lang = data.definition.locale;
@@ -131,9 +135,20 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     storage.saveDraft(surveyId, version, { answers: a, step: s, code: normalized ? formatCode(normalized) : undefined, course: k }, expiresAt);
   };
 
+  /** Forgets this tab's pending submission (other people's on this device stay). */
   const dropOutbox = () => {
+    const sid = outboxRef.current?.submissionId;
     outboxRef.current = null;
-    storage.clearOutbox(surveyId);
+    storage.clearOutbox(surveyId, sid);
+  };
+
+  /** Sends pending submissions of other people on this device in the background. */
+  const flushOthers = async (exceptId?: string) => {
+    for (const other of storage.listOutboxes(surveyId)) {
+      if (other.submissionId === exceptId) continue;
+      const r = await submitAnswers(surveyId, other.submissionId, other.surveyVersion, other.answers, other.code);
+      if (r.kind === 'stored') storage.clearOutbox(surveyId, other.submissionId);
+    }
   };
 
   const anyKeptAnswers = (): boolean => {
@@ -152,6 +167,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const startFresh = (scanned: string | null) => {
     storage.clearDone(surveyId);
     pendingLinkCode.current = null;
+    storage.saveScanned(surveyId, scanned);
     setAnswers({});
     setCode(scanned ?? '');
     setCourse(null);
@@ -220,6 +236,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         // Only now does the device forget the answers. The submission id goes with the outbox,
         // so nothing on the device links it to the stored response.
         dropOutbox();
+        void flushOthers(outbox.submissionId);
         storage.clearAllDrafts(surveyId);
         const d = live.current.def;
         storage.markDone(surveyId, d ? !!d.accessCodes : true);
@@ -236,6 +253,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
           return;
         }
         pendingLinkCode.current = null;
+        storage.saveScanned(surveyId, null);
         focusHeading.current = true;
         setPhase({ kind: 'thanks' });
         return;
@@ -510,7 +528,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       if (problems.length > 0) {
         setMissing(new Set(problems));
         const firstItem = fieldsOf(d).find((f) => f.key === problems[0])?.item.id;
-        document.getElementById(`item-${firstItem}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+        document.getElementById(`item-${firstItem}`)?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
         return;
       }
     }
@@ -540,6 +559,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       answers: given,
       code: normalized || undefined,
       course: live.current.course,
+      // Answers never stay longer than the draft was allowed to (at most 7 days from its start).
+      expiresAt: storage.loadDraft(surveyId, d.version)?.expiresAt,
     };
     outboxRef.current = outbox;
     storage.saveOutbox(surveyId, outbox);
@@ -653,7 +674,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     return (
       <Shell {...shellProps}>
         <div className="panel panel-done" id={HEADING_ID} tabIndex={-1}>
-          {def.thanks.heading && <h2 className="panel-title">{def.thanks.heading}</h2>}
+          {def.thanks.heading && <h1 className="panel-title">{def.thanks.heading}</h1>}
           <Paragraphs paragraphs={def.thanks.paragraphs} />
         </div>
         <div className="nav nav-quiet">
@@ -738,7 +759,10 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
             );
           })}
         </ol>
-        <p className="review-summary">{t.reviewAnswered(answeredCount, fieldCount)}. {t.reviewRequiredOk}</p>
+        <p className="review-summary">
+          {t.reviewAnswered(answeredCount, fieldCount)}.{' '}
+          {def.sections.every((_, i) => sectionProblems(def, i, answers).length === 0) ? t.reviewRequiredOk : t.requiredMissing}
+        </p>
         <p className="review-final">{t.reviewFinal}</p>
         <div className="nav">
           <button className="btn btn-secondary" onClick={() => goTo(sections.length - 1)}>{t.back}</button>

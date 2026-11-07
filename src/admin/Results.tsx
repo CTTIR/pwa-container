@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Inline } from '../components/RichText.tsx';
 import { Shell } from '../components/Shell.tsx';
 import { Courses, PrintSheet, type CodeSheet } from './Courses.tsx';
-import { downloadJson, downloadXlsx } from './exportXlsx.ts';
+import { downloadJson, downloadSummaryXlsx, downloadXlsx } from './exportXlsx.ts';
 import { eventLine } from './format.ts';
 import { adminFetch } from './http.ts';
 import { confirmSurveyStatus, MIN_GROUP, setSurveyClosed } from './surveyStatus.ts';
@@ -89,6 +89,7 @@ export function Results({ surveyId }: { surveyId: string }) {
     if (!confirmSurveyStatus(data.survey.title, close, withCodes, final, data.minGroup ?? MIN_GROUP)) return;
     setBusy(true);
     setMessage(null);
+    let failure: string | null = null;
     try {
       const r = await setSurveyClosed(surveyId, close);
       const n = r.coursesClosed ?? 0;
@@ -97,11 +98,12 @@ export function Results({ surveyId }: { surveyId: string }) {
           ? `Umfrage geschlossen: Es werden keine Antworten mehr angenommen${n ? `; ${n} ${n === 1 ? 'Kurs' : 'Kurse'} abgeschlossen, alle QR-Codes abgelaufen` : ''}.`
           : `Umfrage wieder geöffnet.${data.definition.accessCodes ? ' Abgeschlossene Kurse bleiben abgeschlossen, bis sie einzeln wieder geöffnet werden.' : ''}`,
       );
-      setError(null);
     } catch (err) {
-      setError(`Status konnte nicht geändert werden: ${(err as Error).message}`);
+      failure = `Status konnte nicht geändert werden: ${(err as Error).message}`;
     }
     await load();
+    // Set after reloading, so a failed action stays visible.
+    if (failure) setError(failure);
     setBusy(false);
   };
 
@@ -128,7 +130,9 @@ export function Results({ surveyId }: { surveyId: string }) {
   const withCodes = !!definition.accessCodes;
   const released = courses.filter((c) => c.released);
   const openCourses = courses.filter((c) => !c.closed).length;
-  const smallCourses = courses.filter((c) => c.closed && !c.released && c.responses < k).length;
+  const smallCourses = courses.filter((c) => c.closed && !c.released && (c.responses ?? 0) < k).length;
+  // Single rows per response are only for the global administration; organisers get summaries.
+  const isGlobal = data.role === 'global';
   const shown = data.released && data.responses > 0;
   const canExport = shown && !busy;
   const suffix = course ? `_${course}` : '';
@@ -200,11 +204,12 @@ export function Results({ surveyId }: { surveyId: string }) {
           {shown ? 'Schutz der Anonymität' : course ? 'Für diesen Kurs sind keine Ergebnisse freigegeben' : 'Noch keine Ergebnisse freigegeben'}
         </strong>
         <p>
-          Ergebnisse werden nur für Gruppen mit mindestens {k} Antworten gezeigt (k = {k}).
+          Ergebnisse werden nur für abgeschlossene Gruppen mit mindestens {k} Antworten gezeigt.
           {withCodes
-            ? ` Ein Kurs wird erst freigegeben, wenn er abgeschlossen ist („Kurs abschließen“ oder „Umfrage schließen“) und mindestens ${k} Antworten hat – so lässt sich keine Antwort einer einzelnen Person zuordnen, auch nicht über den Zeitpunkt. Die Freigabe ist endgültig: Ein freigegebener Kurs kann nicht wieder geöffnet werden.`
+            ? ` Ein Kurs wird erst freigegeben, wenn er abgeschlossen ist („Kurs abschließen“ oder „Umfrage schließen“) und mindestens ${k} Antworten hat. Die Freigabe ist endgültig: Ein freigegebener Kurs kann nicht wieder geöffnet werden.`
             : ` So lässt sich keine Antwort einer einzelnen Person zuordnen. Ab ${k} Antworten ist das Schließen der Umfrage endgültig.`}{' '}
           Antworten tragen weder Datum noch Uhrzeit; Freitexte stehen getrennt von den Bewertungen und in zufälliger Reihenfolge.
+          {!isGlobal && ' Die Kursleitung erhält Zusammenfassungen und Freitexte; einzelne Antwortzeilen kann nur die Gesamtverwaltung herunterladen.'}
         </p>
         {!shown && withCodes && courses.length > 0 && (
           <p>
@@ -230,18 +235,29 @@ export function Results({ surveyId }: { surveyId: string }) {
       )}
 
       <div className="admin-actions">
-        <button className="btn btn-primary" disabled={!canExport} onClick={() => void withResponses((r) => downloadXlsx(r, summary, suffix))}>
-          Excel (Bewertungen + Freitexte)
-        </button>
-        {canExport ? (
-          <a className="btn btn-secondary admin-link" href={api(surveyId, 'export.csv', course)} download>
-            CSV Bewertungen
-          </a>
+        {isGlobal ? (
+          <button className="btn btn-primary" disabled={!canExport} onClick={() => void withResponses((r) => downloadXlsx(r, summary, suffix))}>
+            Excel (Bewertungen + Freitexte)
+          </button>
         ) : (
-          <button className="btn btn-secondary" disabled>
-            CSV Bewertungen
+          <button
+            className="btn btn-primary"
+            disabled={!canExport}
+            onClick={() => void downloadSummaryXlsx(definition.id + suffix, fields, summary).catch((err: Error) => setError(err.message))}
+          >
+            Excel (Zusammenfassung + Freitexte)
           </button>
         )}
+        {isGlobal &&
+          (canExport ? (
+            <a className="btn btn-secondary admin-link" href={api(surveyId, 'export.csv', course)} download>
+              CSV Bewertungen
+            </a>
+          ) : (
+            <button className="btn btn-secondary" disabled>
+              CSV Bewertungen
+            </button>
+          ))}
         {textFields.length > 0 &&
           (canExport ? (
             <a className="btn btn-secondary admin-link" href={api(surveyId, 'texts.csv', course)} download>
@@ -252,9 +268,11 @@ export function Results({ surveyId }: { surveyId: string }) {
               CSV Freitexte
             </button>
           ))}
-        <button className="btn btn-secondary" disabled={!canExport} onClick={() => void withResponses((r) => downloadJson(r, suffix))}>
-          JSON
-        </button>
+        {isGlobal && (
+          <button className="btn btn-secondary" disabled={!canExport} onClick={() => void withResponses((r) => downloadJson(r, suffix))}>
+            JSON
+          </button>
+        )}
         <button className="btn btn-link" disabled={busy} onClick={() => void load()}>
           Aktualisieren
         </button>

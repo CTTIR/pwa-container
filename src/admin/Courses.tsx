@@ -11,7 +11,7 @@ export type CodeSheet = CreatedCodes;
 interface Props {
   surveyId: string;
   courses: CourseInfo[];
-  /** Smallest group whose results are shown (k = 5). */
+  /** Smallest group whose results are shown (minimum group size 5). */
   minGroup: number;
   /** Only the global administration may delete answers. */
   canDeleteAnswers: boolean;
@@ -46,8 +46,20 @@ const validCount = (n: number) => Number.isInteger(n) && n >= 1 && n <= 1000;
 function releaseText(c: CourseInfo, minGroup: number): string {
   if (c.released) return 'ja';
   if (!c.closed) return 'nein – noch offen';
-  if (c.responses < minGroup) return `nein – erst ab ${minGroup} Antworten`;
+  if ((c.responses ?? 0) < minGroup) return `nein – erst ab ${minGroup} Antworten`;
   return 'nein';
+}
+
+/** Open courses show no live counts, only whether the minimum group size is reached. */
+function countText(value: number | null, c: CourseInfo, minGroup: number): string {
+  if (value !== null) return String(value);
+  return c.responsesBand === 'atLeastMin' ? `${minGroup} oder mehr` : `unter ${minGroup}`;
+}
+
+/** Neutralises spreadsheet formulas in CSV cells (same rule as the server). */
+function csvCell(v: string): string {
+  const safe = /^[\s\u0000-\u001f]*[=+@-]/u.test(v) ? `'${v}` : v;
+  return `"${safe.replace(/"/g, '""')}"`;
 }
 
 type CodesState = CodeInfo[] | 'loading' | 'error';
@@ -143,11 +155,13 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
   const setClosed = (c: CourseInfo, closed: boolean) => {
     const text = closed
       ? `Kurs „${eventLine(c)}“ abschließen?\n\n` +
-        'Ein abgeschlossener Kurs nimmt keine Antworten mehr an; alle seine QR-Codes sind damit abgelaufen.\n\n' +
-        (c.responses >= minGroup
-          ? `Der Kurs hat ${c.responses} Antworten (mindestens ${minGroup}): Das Abschließen ist ENDGÜLTIG. ` +
+        'Ein abgeschlossener Kurs nimmt keine Antworten mehr an; alle seine QR-Codes sind damit abgelaufen. ' +
+        'Auch Antworten, die noch auf Handys ohne Netz warten, werden danach abgelehnt – am besten erst abschließen, wenn alle ' +
+        'die Danke-Seite gesehen haben, oder am nächsten Tag.\n\n' +
+        (c.responsesBand === 'atLeastMin'
+          ? `Der Kurs hat ${minGroup} oder mehr Antworten: Das Abschließen ist ENDGÜLTIG. ` +
             'Die Ergebnisse werden sofort freigegeben, und der Kurs kann nicht wieder geöffnet werden.'
-          : `Der Kurs hat ${c.responses} Antworten (weniger als ${minGroup}): Er kann noch wieder geöffnet werden, ` +
+          : `Der Kurs hat weniger als ${minGroup} Antworten: Er kann noch wieder geöffnet werden, ` +
             `Ergebnisse werden nicht gezeigt. Hat ein abgeschlossener Kurs ${minGroup} oder mehr Antworten, ist das Abschließen endgültig ` +
             '(Ergebnisse freigegeben, kein Wiederöffnen).')
       : `Kurs „${eventLine(c)}“ wieder öffnen?\n\n` +
@@ -185,7 +199,12 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
         Code; ob ein bestimmter Code benutzt wurde, zeigt die Verwaltung bewusst nicht an. Zettel zufällig austeilen und nicht
         notieren, wer welchen Zettel bekommt. Nach der Veranstaltung „Kurs abschließen“: Danach nimmt der Kurs keine Antworten mehr
         an und alle seine Codes sind abgelaufen. Hat er mindestens {minGroup} Antworten, werden seine Ergebnisse freigegeben – dann ist
-        das Abschließen endgültig, der Kurs kann nicht wieder geöffnet werden.
+        das Abschließen endgültig, der Kurs kann nicht wieder geöffnet werden. Solange ein Kurs offen ist, zeigt die Verwaltung nur, ob
+        schon {minGroup} Antworten da sind – keine genauen Zahlen, damit sich einzelne Abgaben nicht beobachten lassen.
+      </p>
+      <p className="admin-note">
+        Wichtig für die Anonymität: Codes nicht selbst ausfüllen und nicht ausgeteilte Zettel vernichten oder sperren. Die Anmeldung der
+        Kursleitung nur auf eigenen Geräten verwenden (nicht auf Geräten, die Teilnehmende benutzen) und den Browser danach schließen.
       </p>
       {error && (
         <div className="panel panel-error" role="alert">
@@ -211,7 +230,7 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
                 </div>
                 <div>
                   <dt>benutzt</dt>
-                  <dd>{c.used}</dd>
+                  <dd>{countText(c.used, c, minGroup)}</dd>
                 </div>
                 <div>
                   <dt>gesperrt</dt>
@@ -219,7 +238,7 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
                 </div>
                 <div>
                   <dt>Antworten</dt>
-                  <dd>{c.responses}</dd>
+                  <dd>{countText(c.responses, c, minGroup)}</dd>
                 </div>
                 <div>
                   <dt>Ergebnisse freigegeben</dt>
@@ -283,7 +302,7 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
                     Kurs abschließen
                   </button>
                 )}
-                {c.responses === 0 ? (
+                {c.responses === 0 && c.closed ? (
                   <button className="btn btn-link" disabled={busy} onClick={() => remove(c)}>
                     Löschen
                   </button>
@@ -318,7 +337,7 @@ export function Courses({ surveyId, courses, minGroup, canDeleteAnswers, onChang
                 <div className="course-panel danger-zone">
                   <div className="danger-row">
                     <label>
-                      Löscht den Kurs, alle seine Codes und alle {c.responses} Antworten dieses Kurses endgültig. Zur Bestätigung den
+                      Löscht den Kurs, alle seine Codes und alle Antworten dieses Kurses endgültig. Zur Bestätigung den
                       Namen der Veranstaltung genau so eingeben: <code>{c.label}</code>
                       <input
                         className="text-input"
@@ -515,7 +534,7 @@ export function PrintSheet({
   }, [sheet, linkFor]);
 
   const csv = () => {
-    const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const q = csvCell;
     const { label, eventDate, eventDateEnd } = sheet.course;
     const lines = [
       'event,event_date,event_date_end,code,link',

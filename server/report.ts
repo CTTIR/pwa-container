@@ -131,13 +131,16 @@ export function exportKeys(def: SurveyDefinition): string[] {
     .map((f) => f.key);
 }
 
-/** Rows without free-text answers (and without keys of older versions, which could be texts). */
-export function ratingRows(def: SurveyDefinition, rows: StoredResponse[]): StoredResponse[] {
+/**
+ * Rows without free-text answers (and without keys of older versions, which could be texts),
+ * and without the survey version (which could mark single answers).
+ */
+export function ratingRows(def: SurveyDefinition, rows: StoredResponse[]): { course: string | null; answers: Answers }[] {
   const keys = exportKeys(def);
   return rows.map((r) => {
     const answers: Answers = {};
     for (const k of keys) if (Object.hasOwn(r.answers, k)) answers[k] = r.answers[k];
-    return { ...r, answers };
+    return { course: r.course, answers };
   });
 }
 
@@ -169,11 +172,12 @@ export function csvField(input: string): string {
 export function buildCsv(def: SurveyDefinition, rows: StoredResponse[]): string {
   const keys = exportKeys(def);
   const withCourse = def.accessCodes !== undefined || rows.some((r) => r.course);
-  const header = ['response', 'survey_version', ...(withCourse ? ['course'] : []), ...keys];
+  // No survey version per row: a version change during a course would mark single answers.
+  const header = ['response', ...(withCourse ? ['course'] : []), ...keys];
   const lines = [header.map(csvField).join(',')];
   rows.forEach((r, i) => {
     const course = withCourse ? [r.course ?? ''] : [];
-    lines.push([String(i + 1), String(r.surveyVersion), ...course, ...keys.map((k) => cellText(r.answers[k]))].map(csvField).join(','));
+    lines.push([String(i + 1), ...course, ...keys.map((k) => cellText(r.answers[k]))].map(csvField).join(','));
   });
   return BOM + lines.join('\r\n') + '\r\n';
 }

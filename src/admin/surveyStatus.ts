@@ -25,7 +25,8 @@ export function reopenBlocked(withCourses: boolean, responses: number, minGroup 
 export function confirmSurveyStatus(title: string, close: boolean, withCourses: boolean, final: boolean, minGroup = MIN_GROUP): boolean {
   const text = close
     ? `Umfrage „${title}“ schließen?\n\n` +
-      'Danach werden keine Antworten mehr angenommen.' +
+      'Danach werden keine Antworten mehr angenommen – auch keine, die noch auf Handys ohne Netz warten. ' +
+      'Am besten erst schließen, wenn alle die Danke-Seite gesehen haben, oder am nächsten Tag.' +
       (withCourses
         ? ' Alle Kurse werden abgeschlossen; sämtliche QR-Codes und Einmal-Codes sind damit abgelaufen. ' +
           `Für Kurse mit mindestens ${minGroup} Antworten ist das endgültig: Ihre Ergebnisse werden freigegeben, und sie können ` +
@@ -36,7 +37,7 @@ export function confirmSurveyStatus(title: string, close: boolean, withCourses: 
     : `Umfrage „${title}“ wieder öffnen?\n\n` +
       'Die Umfrage nimmt dann wieder Antworten an.' +
       (withCourses
-        ? ' Die Kurse bleiben aber abgeschlossen und ihre QR-Codes abgelaufen, bis Sie einen Kurs einzeln ' +
+        ? ' Die Kurse bleiben aber abgeschlossen und ihre QR-Codes abgelaufen, bis ein Kurs einzeln ' +
           `(„Wieder öffnen“ unter „Kurse und Einmal-Codes“; nur bei weniger als ${minGroup} Antworten möglich) wieder öffnen.`
         : '');
   return window.confirm(text);

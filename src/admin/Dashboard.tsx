@@ -19,7 +19,9 @@ interface AppInfo {
   statusOverride?: 'open' | 'closed' | null;
   opensAt?: string | null;
   closesAt?: string | null;
-  responses?: number;
+  /** Exact count of closed groups; null while open (then only responsesBand). */
+  responses?: number | null;
+  responsesBand?: 'belowMin' | 'atLeastMin' | null;
   subtitle?: string | null;
   collectRecords: boolean;
   records: number;
@@ -66,14 +68,16 @@ export function Dashboard() {
 
   const act = async <T,>(fn: () => Promise<T>, done: string | ((result: T) => string)) => {
     setMessage(null);
+    let failure: string | null = null;
     try {
       const result = await fn();
       setMessage(typeof done === 'function' ? done(result) : done);
-      setError(null);
     } catch (err) {
-      setError((err as Error).message);
+      failure = `Aktion fehlgeschlagen: ${(err as Error).message}`;
     }
     await load();
+    // Set after reloading, so a failed action stays visible.
+    if (failure) setError(failure);
   };
 
   return (
@@ -154,7 +158,7 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
           </div>
         </div>
         <div className="app-count" title={isSurvey ? 'Antworten' : 'Datensätze'}>
-          <span className="fact-num">{isSurvey ? (app.responses ?? 0) : app.records}</span>
+          <span className="fact-num">{isSurvey ? (app.responses ?? (app.responsesBand === 'atLeastMin' ? '≥ 5' : '< 5')) : app.records}</span>
           <span>{isSurvey ? 'Antworten' : 'Datensätze'}</span>
         </div>
       </div>

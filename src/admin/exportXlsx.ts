@@ -130,3 +130,37 @@ export async function downloadRecordsXlsx(
   if (collections.length === 0) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['record', 'collection']]), name('records'));
   XLSX.writeFile(wb, `${appId}_records.xlsx`, { compression: true });
 }
+
+/**
+ * Summary workbook for organisers: one row per question with counts, mean and median, plus a
+ * sheet with the free texts (already shuffled by the server). Contains no single responses.
+ */
+export async function downloadSummaryXlsx(
+  name: string,
+  fields: { key: string; text: string; column?: string; sectionTitle: string }[],
+  summary: FieldSummary[],
+): Promise<void> {
+  const XLSX = await import('xlsx');
+  const wb = XLSX.utils.book_new();
+  const byKey = new Map(fields.map((f) => [f.key, f]));
+  const scales = summary.filter((s): s is Extract<FieldSummary, { kind: 'scale' }> => s.kind === 'scale');
+  if (scales.length) {
+    const head = ['key', 'section', 'question', 'column', 'answered', 'not_applicable', 'mean', 'median', ...scales[0].counts.map((c) => `n_${c.value}`)];
+    const rows = scales.map((s) => {
+      const f = byKey.get(s.key);
+      return [s.key, f?.sectionTitle ?? '', (f?.text ?? '').replace(/\*\*/g, ''), f?.column ?? '', s.answered, s.notApplicable, s.mean, s.median, ...s.counts.map((c) => c.count)];
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([head, ...rows]), 'Zusammenfassung');
+  }
+  const choices = summary.filter((s): s is Extract<FieldSummary, { kind: 'choice' }> => s.kind === 'choice');
+  if (choices.length) {
+    const rows = choices.flatMap((s) => s.counts.map((c) => [s.key, (byKey.get(s.key)?.text ?? '').replace(/\*\*/g, ''), c.option, c.count]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['key', 'question', 'option', 'count'], ...rows]), 'Auswahl');
+  }
+  const texts = summary.filter((s): s is Extract<FieldSummary, { kind: 'text' }> => s.kind === 'text');
+  if (texts.length) {
+    const rows = texts.flatMap((s) => s.values.map((v) => [s.key, (byKey.get(s.key)?.text ?? '').replace(/\*\*/g, ''), v.slice(0, 32000)]));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['key', 'question', 'text'], ...rows]), 'Freitexte');
+  }
+  XLSX.writeFile(wb, `${name.replace(/[^A-Za-z0-9._-]/g, '_')}_summary.xlsx`, { compression: true });
+}

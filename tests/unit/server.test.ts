@@ -92,6 +92,22 @@ describe('participant API', () => {
     expect(Object.keys(row)).toEqual(['surveyVersion', 'course', 'answers']);
   });
 
+  it('survives a client that hangs up in the middle of a request body', async () => {
+    const { request } = await import('node:http');
+    const url = new URL(base);
+    await new Promise<void>((resolve) => {
+      const req = request({ host: url.hostname, port: url.port, method: 'POST', path: '/api/surveys/example-course-feedback/responses', headers: { 'Content-Type': 'application/json', 'Content-Length': '100' } });
+      req.on('error', () => resolve());
+      req.write('{"su');
+      setTimeout(() => {
+        req.destroy();
+        resolve();
+      }, 50);
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect((await fetch(`${base}/healthz`)).status).toBe(200);
+  });
+
   it('refuses answers given to another version of the questions', async () => {
     const res = await fetch(`${base}/api/surveys/example-course-feedback/responses`, {
       method: 'POST',
@@ -143,7 +159,9 @@ describe('administration', () => {
     expect((await close(true)).status).toBe(200);
     expect(await summary()).toMatchObject({ released: true, responses: 5 });
     const ratings = await (await fetch(`${base}/admin/api/results/example-course-feedback/export.csv`, { headers: { Authorization: ADMIN } })).text();
-    expect(ratings.split('\r\n')[0]).toBe('response,survey_version,C01,C02,C03_PRE,C03_POST,C04');
+    expect(ratings.split('\r\n')[0]).toBe('response,C01,C02,C03_PRE,C03_POST,C04');
+    const asLead = await fetch(`${base}/admin/api/results/example-course-feedback/export.csv`, { headers: { Authorization: LEAD } });
+    expect(asLead.status).toBe(403); // single rows only for the global administration
     expect(ratings).not.toContain('cmd()');
     const texts = await (await fetch(`${base}/admin/api/results/example-course-feedback/texts.csv`, { headers: { Authorization: ADMIN } })).text();
     expect(texts).toContain("'=cmd() and more");
@@ -355,7 +373,14 @@ describe('courses and single-use codes', () => {
     expect((await post(sid(1), 'ZZZZ-ZZZZ')).status).toBe(422);
     expect((await post(sid(1), codes[0])).status).toBe(201);
     expect((await post(sid(1), codes[0])).status).toBe(200); // retry of the same submission
-    expect((await post(sid(2), codes[0])).status).toBe(409); // code already used
+    expect((await post(sid(2), codes[0])).status).toBe(422); // code already used: answered like an unknown code
+    // The public check never tells whether a known code was used.
+    const again = await fetch(`${base}/api/surveys/coded-survey/code`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: codes[0] }),
+    });
+    expect(again.status).toBe(200);
     const [row] = store.list('coded-survey');
     expect(row).toEqual({ surveyVersion: 1, course: 'Instruktorenkurs Neuwied', answers: expect.any(Object) });
     const all = JSON.stringify(store.list('coded-survey'));
@@ -384,12 +409,35 @@ describe('courses and single-use codes', () => {
       (await (await fetch(results(`summary?course=${courseId}`), { headers: { Authorization: ADMIN } })).json()) as { released: boolean; responses: number };
     for (let i = 2; i <= 4; i++) expect((await post(sid(10 + i), codes[i])).status).toBe(201);
     expect(await summary()).toMatchObject({ released: false, responses: 0 }); // 5 answers, but still open
+    const open = (await (await fetch(results('courses'), { headers: { Authorization: ADMIN } })).json()) as {
+      courses: { responses: number | null; used: number | null; responsesBand: string | null }[];
+    };
+    expect(open.courses[0]).toMatchObject({ responses: null, used: null, responsesBand: 'atLeastMin' }); // no live counts
     await fetch(results(`courses/${courseId}`), { method: 'PATCH', headers: adminWrite, body: JSON.stringify({ closed: true }) });
     expect((await post(sid(20), codes[5])).status).toBe(409); // closed course: codes expired
     expect(await summary()).toMatchObject({ released: true, responses: 5 });
     const csv = await (await fetch(results(`export.csv?course=${courseId}`), { headers: { Authorization: ADMIN } })).text();
-    expect(csv.split('\r\n')[0]).toBe('response,survey_version,course,C01,C02,C03_PRE,C03_POST,C04');
+    expect(csv.split('\r\n')[0]).toBe('response,course,C01,C02,C03_PRE,C03_POST,C04');
     expect(csv.trim().split('\r\n')).toHaveLength(6);
+  });
+
+  it('refuses a second course with the same name', async () => {
+    const dup = await fetch(results('courses'), {
+      method: 'POST',
+      headers: adminWrite,
+      body: JSON.stringify({ label: 'instruktorenkurs neuwied', eventDate: '2026-12-01', count: 1 }),
+    });
+    expect(dup.status).toBe(409);
+  });
+
+  it('refuses a new version that turns a free-text item into a rating', async () => {
+    const d = def();
+    d.version = 2;
+    const open = d.sections.find((x: { id: string }) => x.id === 'OPEN');
+    open.items[0] = { id: 'O01', type: 'choice', text: 'Now a choice', options: ['a', 'b'] };
+    const res = await fetch(`${base}/admin/api/apps/surveys`, { method: 'POST', headers: adminWrite, body: JSON.stringify(d) });
+    expect(res.status).toBe(422);
+    expect(((await res.json()) as { error: string }).error).toContain('O01');
   });
 
   it('refuses to reopen a released course', async () => {

@@ -36,7 +36,7 @@ export function createRoutesJsonWriter(file: string, log: (msg: string) => void)
   let last = '';
   return (apps) => {
     const content = JSON.stringify({ labels: apps.map((a) => a.hostLabel).sort() }, null, 2) + '\n';
-    if (content === last) return;
+    if (content === last && fs.existsSync(file)) return;
     try {
       const tmp = `${file}.tmp-${process.pid}`;
       fs.writeFileSync(tmp, content, { mode: 0o640 });
@@ -55,7 +55,7 @@ export function createTraefikWriter(config: Config, log: (msg: string) => void):
   return (apps) => {
     if (!config.traefik || !config.appDomain) return;
     const content = traefikConfig(config, apps);
-    if (content === last) return;
+    if (content === last && fs.existsSync(config.traefik.dynamicFile)) return;
     try {
       // Written in place: the file is usually a single-file bind mount, where renames fail.
       fs.writeFileSync(config.traefik.dynamicFile, content);

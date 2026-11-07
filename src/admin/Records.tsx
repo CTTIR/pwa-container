@@ -8,7 +8,7 @@ interface RecordsInfo {
   app: { id: string; title: string; url: string; type: string };
   collecting: boolean;
   total: number;
-  bytes: number;
+  megabytes: number;
   collections: { collection: string; records: number }[];
   limits: { maxRecordBytes: number; maxRecords: number; maxTotalBytes: number };
 }
@@ -79,7 +79,7 @@ export function Records({ appId }: { appId: string }) {
       </div>
       <p className="admin-note">
         Gespeichert werden nur der Datensatz und seine Sammlung – kein Datum, keine Uhrzeit, keine IP-Adressen; Reihenfolge zufällig.
-        Belegt: {(info.bytes / 1024 / 1024).toFixed(1)} von {Math.round(info.limits.maxTotalBytes / 1024 / 1024)} MB; höchstens{' '}
+        Belegt: höchstens {info.megabytes} von {Math.round(info.limits.maxTotalBytes / 1024 / 1024)} MB; höchstens{' '}
         {info.limits.maxRecords.toLocaleString('de-DE')} Datensätze je App, je Datensatz {Math.round(info.limits.maxRecordBytes / 1024)} KB.
       </p>
 

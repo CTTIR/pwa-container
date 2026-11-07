@@ -315,12 +315,21 @@ export class AdminAuth {
         await verifyPassword(password, DUMMY_HASH);
         return null;
       }
-      let best: AuthResult = null;
+      // Each distinct hash is checked once, however often a user name appears.
       const rank = { global: 3, survey: 2, other: 1 } as const;
+      const best = new Map<string, 'global' | 'survey' | 'other'>();
       for (const { scope, cred } of scopes) {
-        if ((best === null || rank[scope] > rank[best as keyof typeof rank]) && (await verifyPassword(password, cred.hash))) best = scope;
+        const prev = best.get(cred.hash);
+        if (!prev || rank[scope] > rank[prev]) best.set(cred.hash, scope);
       }
-      return best;
+      let result: AuthResult = null;
+      for (const [hash, scope] of [...best.entries()].sort((a, b) => rank[b[1]] - rank[a[1]])) {
+        if (await verifyPassword(password, hash)) {
+          result = scope;
+          break;
+        }
+      }
+      return result;
     });
   }
 }

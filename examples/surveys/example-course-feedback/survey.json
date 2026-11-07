@@ -12,29 +12,49 @@
     "heading": "Your feedback",
     "paragraphs": [
       "This short survey takes about three minutes.",
-      "It is **anonymous**: no names, no participant codes and no IP addresses are stored."
+      "It is **anonymous**: no names, no participant codes, no IP addresses and no date or time are stored."
     ]
   },
   "privacy": {
     "heading": "Privacy",
     "paragraphs": [
-      "Only your answers and the day of submission are stored. Until you submit, your draft is kept in this browser only."
+      "Only your answers and the survey version are stored, without any date or time. Until you submit, your draft is kept in this browser only and deleted after submission (or after 7 days)."
     ]
   },
   "thanks": {
     "heading": "Thank you!",
-    "paragraphs": ["Your answers have been received."]
+    "paragraphs": [
+      "Your answers have been received."
+    ]
   },
   "scales": {
     "agree5": {
       "options": [
-        { "value": 1, "label": "Strongly disagree" },
-        { "value": 2, "label": "Disagree" },
-        { "value": 3, "label": "Neutral" },
-        { "value": 4, "label": "Agree" },
-        { "value": 5, "label": "Strongly agree" }
+        {
+          "value": 1,
+          "label": "Strongly disagree"
+        },
+        {
+          "value": 2,
+          "label": "Disagree"
+        },
+        {
+          "value": 3,
+          "label": "Neutral"
+        },
+        {
+          "value": 4,
+          "label": "Agree"
+        },
+        {
+          "value": 5,
+          "label": "Strongly agree"
+        }
       ],
-      "notApplicable": { "value": "NA", "label": "Cannot judge" }
+      "notApplicable": {
+        "value": "NA",
+        "label": "Cannot judge"
+      }
     }
   },
   "sections": [
@@ -44,27 +64,61 @@
       "description": "Rate the following statements.",
       "legendScale": "agree5",
       "items": [
-        { "id": "C01", "type": "scale", "scale": "agree5", "text": "The goals of the course were clear.", "required": true },
-        { "id": "C02", "type": "scale", "scale": "agree5", "text": "The schedule was appropriate.", "required": true },
+        {
+          "id": "C01",
+          "type": "scale",
+          "scale": "agree5",
+          "text": "The goals of the course were clear.",
+          "required": true
+        },
+        {
+          "id": "C02",
+          "type": "scale",
+          "scale": "agree5",
+          "text": "The schedule was appropriate.",
+          "required": true
+        },
         {
           "id": "C03",
           "type": "matrix",
           "scale": "agree5",
           "text": "I feel confident in the course topic.",
           "columns": [
-            { "id": "PRE", "label": "Before the course" },
-            { "id": "POST", "label": "After the course" }
+            {
+              "id": "PRE",
+              "label": "Before the course"
+            },
+            {
+              "id": "POST",
+              "label": "After the course"
+            }
           ],
           "required": true
         },
-        { "id": "C04", "type": "choice", "text": "Which formats did you find most useful?", "options": ["Lectures", "Group work", "Practical exercises"], "multiple": true }
+        {
+          "id": "C04",
+          "type": "choice",
+          "text": "Which formats did you find most useful?",
+          "options": [
+            "Lectures",
+            "Group work",
+            "Practical exercises"
+          ],
+          "multiple": true
+        }
       ]
     },
     {
       "id": "OPEN",
       "title": "Open feedback",
       "items": [
-        { "id": "O01", "type": "text", "multiline": true, "maxLength": 1000, "text": "What should be improved?" }
+        {
+          "id": "O01",
+          "type": "text",
+          "multiline": true,
+          "maxLength": 1000,
+          "text": "What should be improved?"
+        }
       ]
     }
   ]

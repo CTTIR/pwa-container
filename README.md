@@ -117,8 +117,7 @@ app in the administration:
   A client record id de-duplicates resends.
 - **Limits per app:** at most 50,000 records and 25 MB in total, 256 KB per record. Records nested
   deeper than 32 levels or with more than 20,000 values are refused.
-- **Exports** are streamed. Surveys without their own `maxResponses` accept at most 20,000
-  responses.
+- **Exports** are streamed.
 - **Downloads:**
   - JSON with the original structure.
   - CSV and XLSX with nested fields flattened to dotted columns, one sheet per collection.
@@ -196,6 +195,25 @@ isolated from the administration and from other apps by the browser's same-origi
 - **Codes:** unknown codes are answered at most 30 times per minute and survey, so codes cannot be
   found by guessing.
 - **Web-app records:** at most 50,000 records and 25 MB per app.
+
+## Residual risks
+
+These limits are inherent; deployments should state them.
+
+- **Organisers hold the codes.** Whoever has the code list could answer with unused codes and so
+  isolate a real participant in a small course.
+  - Hand out slips at random, keep no list of who got which slip, and block slips that were not
+    handed out.
+  - Course leads see summaries only; single rows are for the global administration.
+- **Operator access.** Root on the server, or the hosting provider, can read the databases and
+  the traffic between the reverse proxy and the container while the process runs. Use an
+  encrypted volume and encrypted backups, and do not back up while a course is open.
+- **Subdomain labels are not secret.** Every certificate appears in public certificate-
+  transparency logs.
+- **Shared devices.** Drafts of coded surveys live only in the browser tab, and pending
+  submissions are kept per person. A link with a code can still remain in the browser history.
+- **Basic authentication** has no logout. Organisers should sign in only on their own devices
+  and close the browser afterwards.
 
 ## Develop
 

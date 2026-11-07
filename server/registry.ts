@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomInt } from 'node:crypto';
-import { HOST_LABEL_PATTERN, SURVEY_ID_PATTERN, surveyStatus, validateDefinition, type SurveyDefinition, type SurveyStatus } from '../shared/schema.ts';
+import { HOST_LABEL_PATTERN, SURVEY_ID_PATTERN, fieldsOf, surveyStatus, validateDefinition, type SurveyDefinition, type SurveyStatus } from '../shared/schema.ts';
 import type { AppRow, Store } from './db.ts';
 
 export type AppType = 'survey' | 'static';
@@ -40,7 +40,10 @@ export const STATIC_LIMITS = { maxFileBytes: 25 * 1024 * 1024, maxTotalBytes: 15
 
 const LABEL_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
 
-/** Random, hard-to-guess subdomain label such as "k7m2q9xw" (starts with a letter). */
+/**
+ * Random subdomain label such as "k7m2q9xw" (starts with a letter). Not a secret: certificates
+ * for every label appear in public certificate-transparency logs.
+ */
 export function randomLabel(length = 8): string {
   let out = LABEL_ALPHABET[randomInt(0, 23)];
   while (out.length < length) out += LABEL_ALPHABET[randomInt(0, LABEL_ALPHABET.length)];
@@ -52,6 +55,10 @@ export interface RegistryOptions {
   reservedLabels?: string[];
   /** Called after any change that affects the set of apps or their host names. */
   onChange?: (apps: AppEntry[]) => void;
+}
+
+function fieldTypes(def: SurveyDefinition): Record<string, string> {
+  return Object.fromEntries(fieldsOf(def).map((f) => [f.key, f.item.type]));
 }
 
 function hashJson(json: string): string {
@@ -186,6 +193,20 @@ export class AppRegistry {
     };
   }
 
+  /**
+   * Changes that would expose earlier answers are refused once responses exist: switching the
+   * access-code mode, or turning a free-text item into another kind (or back).
+   */
+  private definitionRefusal(def: SurveyDefinition): string | null {
+    if (!this.store.hasResponses(def.id)) return null;
+    const previous = this.previous.get(def.id) ?? this.apps.get(def.id);
+    const prevMode = previous?.survey?.def.accessCodes ?? null;
+    if (previous?.survey && (def.accessCodes ?? null) !== prevMode) return 'the access-code mode cannot change once responses exist';
+    const changed = this.store.changedFieldKinds(def.id, fieldTypes(def));
+    if (changed.length) return `answer keys change between free text and other kinds: ${changed.join(', ')}`;
+    return null;
+  }
+
   /** Keeps serving the last good version of a survey whose new file was refused. */
   private keepPrevious(folder: string, reason: string): void {
     const prev = this.previous.get(folder);
@@ -212,7 +233,12 @@ export class AppRegistry {
       this.note(`skipping ${folder}: "${def.id}" is a reserved name`);
       return;
     }
-    if (!this.store.registerVersion(def.id, def.version, hashJson(loaded.json))) {
+    const refusal = this.definitionRefusal(def);
+    if (refusal) {
+      this.keepPrevious(def.id, refusal);
+      return;
+    }
+    if (!this.store.registerVersion(def.id, def.version, hashJson(loaded.json), fieldTypes(def))) {
       this.keepPrevious(def.id, `content changed but version ${def.version} already has responses; increase "version"`);
       return;
     }
@@ -261,6 +287,8 @@ export class AppRegistry {
   }
 
   statusOf(app: AppEntry, now: Date): SurveyStatus {
+    // A released survey stays closed, whatever a later definition or override says.
+    if (this.store.appReleased(app.id)) return 'closed';
     if (app.statusOverride) return app.statusOverride;
     return app.survey ? surveyStatus(app.survey.def, now) : 'open';
   }
@@ -289,7 +317,9 @@ export class AppRegistry {
     if (existing && existing.source === 'provisioned') return 'this survey is provisioned by the deployment and cannot be replaced here';
     if (existing && existing.type !== 'survey') return 'an app with this id already exists';
     const json = JSON.stringify(def);
-    if (!this.store.registerVersion(def.id, def.version, hashJson(json))) {
+    const refusal = this.definitionRefusal(def);
+    if (refusal) return refusal;
+    if (!this.store.registerVersion(def.id, def.version, hashJson(json), fieldTypes(def))) {
       return `version ${def.version} already has responses; increase "version" to change the content`;
     }
     const dir = path.join(this.appsDir, def.id);

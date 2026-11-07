@@ -38,9 +38,13 @@ export interface CourseInfo {
   eventDateEnd: string | null;
   closed: boolean;
   codes: number;
-  used: number;
+  /** Exact only for closed courses (null while open: no live counts). */
+  used: number | null;
   revoked: number;
-  responses: number;
+  /** Exact only for closed courses (null while open). */
+  responses: number | null;
+  /** While open: whether at least the minimum group size has answered. */
+  responsesBand?: 'belowMin' | 'atLeastMin' | null;
   released: boolean;
 }
 

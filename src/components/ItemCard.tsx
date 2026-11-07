@@ -35,10 +35,10 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
   const isMissing = missing.has(item.id);
   return (
     <section className={`item-card${invalid ? ' is-invalid' : ''}`} aria-labelledby={headingId} id={`item-${item.id}`}>
-      <h3 className="item-text" id={headingId}>
+      <h2 className="item-text" id={headingId}>
         <Inline text={item.text} />
         {!item.required && <span className="item-optional"> ({t.optional})</span>}
-      </h3>
+      </h2>
       {item.hint && <p className="item-hint" id={hintId}>{item.hint}</p>}
       {item.type === 'scale' && (
         <>

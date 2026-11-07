@@ -71,9 +71,16 @@
     return h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' + h.slice(6, 8).join('') + '-' + h.slice(8, 10).join('') + '-' + h.slice(10).join('');
   }
 
-  /** A queued record: { id, collection, json } with the data already serialized. */
+  /** Queued records are dropped after this long (they never leave the device unsent forever). */
+  var KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+
+  /** A queued record: { id, collection, json, expiresAt } with the data already serialized. */
   function valid(item) {
     return item && typeof item.id === 'string' && typeof item.collection === 'string' && typeof item.json === 'string';
+  }
+
+  function fresh(item) {
+    return typeof item.expiresAt !== 'number' || item.expiresAt > Date.now();
   }
 
   /** Reads the outbox afresh, so changes made by other tabs are never overwritten. */
@@ -84,7 +91,9 @@
       if (!Array.isArray(list)) return [];
       var good = list.filter(valid);
       if (good.length !== list.length) console.warn('pwa-container: ignored ' + (list.length - good.length) + ' unreadable queued record(s)');
-      return good;
+      var live = good.filter(fresh);
+      if (live.length !== good.length) console.warn('pwa-container: dropped ' + (good.length - live.length) + ' queued record(s) older than 14 days');
+      return live;
     } catch (e) {
       console.warn('pwa-container: record outbox unreadable', e);
       return memory.slice();
@@ -127,7 +136,12 @@
           if (!o || typeof o !== 'object') return;
           try {
             var json = JSON.stringify(o.data === undefined ? null : o.data);
-            list.push({ id: uuid(), collection: typeof o.collection === 'string' ? o.collection : 'default', json: json === undefined ? 'null' : json });
+            list.push({
+              id: uuid(),
+              collection: typeof o.collection === 'string' ? o.collection : 'default',
+              json: json === undefined ? 'null' : json,
+              expiresAt: Date.now() + KEEP_MS,
+            });
           } catch (e) {
             console.warn('pwa-container: dropped an old queued record that cannot be serialized', e);
           }
@@ -150,22 +164,41 @@
   /** 'done' (stored or duplicate), 'invalid' (400/413: will never be accepted) or 'retry'. */
   function post(item) {
     var body = '{"collection":' + JSON.stringify(item.collection) + ',"data":' + item.json + ',"id":' + JSON.stringify(item.id) + '}';
+    var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 20000) : null;
     return fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: body,
       cache: 'no-store',
       credentials: 'same-origin',
-    }).then(
-      function (res) {
-        if (res.status === 201 || res.status === 200) return 'done';
-        if (res.status === 400 || res.status === 413) return 'invalid';
-        return 'retry'; // 403 switched off, 404, 409 full, 429, 5xx, anything else
-      },
-      function () {
-        return 'retry';
-      }
-    );
+      redirect: 'error',
+      signal: ctrl ? ctrl.signal : undefined,
+    })
+      .then(
+        function (res) {
+          if (res.status === 201 || res.status === 200) {
+            // Only a real confirmation counts (not e.g. a login page of a Wi-Fi portal).
+            return res.json().then(
+              function (b) {
+                return b && (b.status === 'stored' || b.status === 'duplicate') ? 'done' : 'retry';
+              },
+              function () {
+                return 'retry';
+              }
+            );
+          }
+          if (res.status === 400 || res.status === 413) return 'invalid';
+          return 'retry'; // 403 switched off, 404, 409 full, 429, 5xx, anything else
+        },
+        function () {
+          return 'retry'; // network error or timeout
+        }
+      )
+      .then(function (result) {
+        if (timer) clearTimeout(timer);
+        return result;
+      });
   }
 
   function schedule() {
@@ -249,7 +282,7 @@
         return Promise.reject(e);
       }
       if (json === undefined) json = 'null'; // e.g. a function
-      var item = { id: uuid(), collection: collection, json: json };
+      var item = { id: uuid(), collection: collection, json: json, expiresAt: Date.now() + KEEP_MS };
       update(function (list) {
         list.push(item);
         trim(list);
