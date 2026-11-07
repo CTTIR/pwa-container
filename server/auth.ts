@@ -88,7 +88,8 @@ const OVERFLOW_MAX_CONCURRENT = 10;
  */
 const PENALTY_PARALLEL = 1;
 const PENALTY_QUEUE = 4;
-const PENALTY_INTERVAL_MS = 1000;
+/** Two lanes at one check per 2 s each: at most one check per second in total. */
+const PENALTY_INTERVAL_MS = 2000;
 /** More failures than this within GLOBAL_WINDOW_MS count as a broad attack. */
 const GLOBAL_ALARM_FAILURES = 200;
 /** Sources that signed in successfully stay on the normal path during a broad attack this long. */

@@ -133,8 +133,8 @@ Brute-force protection:
     separate lane, so failing attackers cannot fill it.
   - Clients that signed in successfully for that page keep the normal path. They are remembered
     in memory only, as keyed hashes, for 30 days or until a restart.
-  - Each lane runs one check at a time and at most one per second, so during an attack guessing
-    is limited to about two attempts per second overall.
+  - Each lane runs one check at a time and at most one every two seconds, so guessing is
+    limited to about one attempt per second overall.
   - Correct credentials are never refused outright; under load the answer may be "try again".
 - **Passwords:** at least 16 characters. `node server/cli.ts new-password` prints a random
   24-character password with its hash.

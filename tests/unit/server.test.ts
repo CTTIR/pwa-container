@@ -217,7 +217,7 @@ describe('admin authentication', () => {
     expect(await auth.authenticate(ADMIN)).toBe('global');
   });
 
-  it('spaces checks in the narrow lane to one per second', async () => {
+  it('spaces checks in a narrow lane to one per two seconds', async () => {
     let clock = 5_000_000;
     const waits: number[] = [];
     const auth = new AdminAuth(credFile, {
@@ -231,7 +231,7 @@ describe('admin authentication', () => {
     waits.length = 0;
     await auth.authenticate(wrong, undefined, '203.0.113.50');
     await auth.authenticate(wrong, undefined, '203.0.113.50');
-    expect(waits.some((w) => w > 0 && w <= 1000)).toBe(true);
+    expect(waits.some((w) => w > 0 && w <= 2000)).toBe(true);
   });
 
   it('during a broad attack slows down unknown sources but not known administrators', async () => {
@@ -244,7 +244,7 @@ describe('admin authentication', () => {
     expect(pauses).toEqual([]); // normal path, no lane spacing
     await auth.authenticate(wrong, undefined, '192.0.2.10'); // fresh sources share the narrow lane
     await auth.authenticate(wrong, undefined, '192.0.2.11');
-    expect(pauses.some((ms) => ms > 0 && ms <= 1000)).toBe(true);
+    expect(pauses.some((ms) => ms > 0 && ms <= 2000)).toBe(true);
   }, 60_000);
 
   it('generates long random passwords and refuses short ones', () => {
