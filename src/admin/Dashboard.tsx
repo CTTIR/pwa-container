@@ -104,6 +104,7 @@ export function Dashboard() {
               <AppCard key={app.id} app={app} act={act} appDomain={data.appDomain} />
             ))}
           </div>
+          <Databases />
           <InstallSurvey act={act} />
           <UploadStatic act={act} limits={data.limits} existing={data.apps} appDomain={data.appDomain} />
           {data.themes.length > 0 && (
@@ -116,6 +117,118 @@ export function Dashboard() {
 }
 
 type Act = <T>(fn: () => Promise<T>, done: string | ((result: T) => string)) => Promise<void>;
+
+interface DatabaseInfo {
+  app: AppInfo;
+  appId: string;
+  path: string;
+  files: { name: string; bytes: number }[];
+  tables: { file: string; table: string; rows: number }[];
+  responses: number;
+  responsesByVersion: { version: number; responses: number }[];
+  uncodedResponses: number;
+  courses: number;
+  openCourses: number;
+  codes: number;
+  usedCodes: number;
+  revokedCodes: number;
+  records: number;
+  collections: { collection: string; records: number }[];
+  versions: number[];
+}
+
+function bytes(n: number): string {
+  return n < 1024 * 1024 ? `${(n / 1024).toLocaleString('de-DE', { maximumFractionDigits: 1 })} KB` : `${(n / 1024 / 1024).toLocaleString('de-DE', { maximumFractionDigits: 1 })} MB`;
+}
+
+/** Metadata of every app's own database (global administration only). */
+function Databases() {
+  const [list, setList] = useState<DatabaseInfo[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = () =>
+    adminFetch<{ databases: DatabaseInfo[] }>('/admin/api/databases')
+      .then((r) => {
+        setList(r.databases);
+        setError(null);
+      })
+      .catch((err: Error) => setError(`Datenbanken konnten nicht geladen werden: ${err.message}`));
+  useEffect(() => {
+    void load();
+  }, []);
+  return (
+    <section className="admin-section">
+      <h2 className="section-title">
+        <span>Datenbanken ({list?.length ?? '…'})</span>
+      </h2>
+      <p className="admin-note">
+        Jede App hat ihre eigene Datenbank im Datenvolume unter <code>db/&lt;app&gt;/</code>: <code>answers.sqlite</code> (Antworten, Datensätze) und{' '}
+        <code>codes.sqlite</code> (Kurse, Zugangscodes), getrennt gespeichert. Die Admins einer App sehen nur deren Datenbank.
+      </p>
+      {error && <div className="panel panel-error">{error}</div>}
+      {list && list.length === 0 && <p className="status-text">Keine Datenbanken.</p>}
+      <div className="items">
+        {list?.map((d) => (
+          <div key={d.appId} className="item-card">
+            <h3 className="item-text">
+              <span className="admin-key">{d.appId}</span> {d.app.title}
+            </h3>
+            <div className="admin-stats">
+              <span>{d.responses} Antworten</span>
+              {d.uncodedResponses > 0 && <span>{d.uncodedResponses} ohne Kurs</span>}
+              <span>
+                {d.courses} Kurse ({d.openCourses} offen)
+              </span>
+              <span>
+                {d.codes} Codes, {d.usedCodes} benutzt, {d.revokedCodes} gesperrt
+              </span>
+              {d.records > 0 && <span>{d.records} Datensätze</span>}
+              <span>{bytes(d.files.reduce((a, f) => a + f.bytes, 0))}</span>
+            </div>
+            <table className="data-table data-compare">
+              <tbody>
+                <tr>
+                  <th>Pfad</th>
+                  <td>
+                    <code>{d.path}</code>
+                  </td>
+                </tr>
+                <tr>
+                  <th>Dateien</th>
+                  <td>{d.files.map((f) => `${f.name} (${bytes(f.bytes)})`).join(', ')}</td>
+                </tr>
+                <tr>
+                  <th>Tabellen</th>
+                  <td>{d.tables.map((t) => `${t.file.replace('.sqlite', '')}.${t.table}: ${t.rows}`).join(', ')}</td>
+                </tr>
+                <tr>
+                  <th>Versionen</th>
+                  <td>
+                    {d.versions.length
+                      ? d.versions.map((v) => `v${v}: ${d.responsesByVersion.find((x) => x.version === v)?.responses ?? 0}`).join(', ')
+                      : '–'}
+                  </td>
+                </tr>
+                {d.collections.length > 0 && (
+                  <tr>
+                    <th>Sammlungen</th>
+                    <td>{d.collections.map((c) => `${c.collection}: ${c.records}`).join(', ')}</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {d.app.type === 'survey' && (
+              <div className="admin-actions">
+                <a className="btn btn-secondary admin-link" href={`/admin/results/${encodeURIComponent(d.appId)}`}>
+                  Datenbank öffnen
+                </a>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: string | null }) {
   const [qr, setQr] = useState<string | null>(null);

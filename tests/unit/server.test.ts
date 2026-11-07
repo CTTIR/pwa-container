@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../../server/app.ts';
 import { AdminAuth, SOURCE_MAX_FAILURES, generatePassword, hashPassword, sourceGroup } from '../../server/auth.ts';
+import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../../server/db.ts';
 import { AppRegistry } from '../../server/registry.ts';
 
@@ -161,7 +162,7 @@ describe('administration', () => {
     const ratings = await (await fetch(`${base}/admin/api/results/example-course-feedback/export.csv`, { headers: { Authorization: ADMIN } })).text();
     expect(ratings.split('\r\n')[0]).toBe('response,C01,C02,C03_PRE,C03_POST,C04');
     const asLead = await fetch(`${base}/admin/api/results/example-course-feedback/export.csv`, { headers: { Authorization: LEAD } });
-    expect(asLead.status).toBe(403); // single rows only for the global administration
+    expect(asLead.status).toBe(200); // the survey's own administration has full access to its data
     expect(ratings).not.toContain('cmd()');
     const texts = await (await fetch(`${base}/admin/api/results/example-course-feedback/texts.csv`, { headers: { Authorization: ADMIN } })).text();
     expect(texts).toContain("'=cmd() and more");
@@ -564,5 +565,98 @@ describe('records of web apps', () => {
     expect(json.records).toHaveLength(2);
     const del = await fetch(`${base}/admin/api/records/demo-app?confirm=demo-app`, { method: 'DELETE', headers: auth });
     expect(((await del.json()) as { removed: number }).removed).toBe(2);
+  });
+});
+
+describe('per-app databases and data access', () => {
+  const data = (id: string, auth: string, query = 'format=json') => fetch(`${base}/admin/api/results/${id}/data?${query}`, { headers: { Authorization: auth } });
+
+  beforeAll(() => {
+    // An earlier test purged the survey: give it responses of its own.
+    // It is closed for good by now, so the responses are written to the store directly.
+    for (let i = 1; i <= 5; i++) {
+      expect(store.insert('example-course-feedback', 1, `d${i}dddddd-dddd-4ddd-8ddd-dddddddddddd`, answers, { maxResponses: 1000, maxBytes: 1e7 })).toBe('stored');
+    }
+  });
+
+  it('keeps every app in its own database files', () => {
+    for (const name of ['answers.sqlite', 'codes.sqlite']) {
+      expect(fs.existsSync(path.join(dataDir, 'db', 'example-course-feedback', name))).toBe(true);
+      expect(fs.existsSync(path.join(dataDir, name))).toBe(false);
+    }
+  });
+
+  it('gives the survey administration all single responses with free texts', async () => {
+    const res = await data('example-course-feedback', LEAD);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { rows: { answers: Record<string, unknown> }[]; codebook: { key: string }[] };
+    expect(body.rows.length).toBeGreaterThanOrEqual(5);
+    expect(body.rows.some((r) => r.answers.O01 === '=cmd() and more')).toBe(true);
+    expect(body.codebook.map((e) => e.key)).toContain('O01');
+  });
+
+  it('never shows one survey\'s data to the administration of another survey', async () => {
+    const foreign = await data('example-course-feedback', CODED_LEAD);
+    expect(foreign.status).not.toBe(200);
+    expect(await foreign.text()).not.toContain('cmd()');
+    for (const q of ['format=csv', 'format=rds', 'format=json-file']) expect((await data('example-course-feedback', CODED_LEAD, q)).status).not.toBe(200);
+    expect((await data('coded-survey', LEAD)).status).not.toBe(200);
+    expect((await fetch(`${base}/admin/api/databases`, { headers: { Authorization: LEAD } })).status).toBe(403);
+    expect((await fetch(`${base}/admin/api/databases`)).status).toBe(401);
+  });
+
+  it('lists metadata of every database for the global administration', async () => {
+    const res = await fetch(`${base}/admin/api/databases`, { headers: { Authorization: ADMIN } });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { databases: { appId: string; responses: number; path: string; tables: { table: string }[] }[] };
+    const own = body.databases.find((d) => d.appId === 'example-course-feedback');
+    expect(own?.path).toBe('db/example-course-feedback');
+    expect(own?.responses).toBeGreaterThanOrEqual(5);
+    expect(own?.tables.map((t) => t.table)).toEqual(expect.arrayContaining(['responses', 'courses', 'access_codes', 'records']));
+  });
+
+  it('exports subsets as CSV, RDS and JSON and refuses malformed filters', async () => {
+    const raw = Buffer.from(await (await data('example-course-feedback', LEAD, 'format=csv&fields=C01,O01')).arrayBuffer());
+    expect([...raw.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]); // byte order mark for Excel
+    const csv = raw.subarray(3).toString('utf8');
+    expect(csv.split('\r\n')[0]).toBe('response;survey_version;course;C01;O01');
+    expect(csv).toContain("'=cmd() and more");
+    const comma = await (await data('example-course-feedback', LEAD, 'format=csv&sep=comma&fields=C01')).text();
+    expect(comma.split('\r\n')[0]).toBe('response,survey_version,course,C01');
+    const rds = Buffer.from(await (await data('example-course-feedback', LEAD, 'format=rds')).arrayBuffer());
+    expect([rds[0], rds[1]]).toEqual([0x1f, 0x8b]);
+    const none = (await (await data('example-course-feedback', LEAD, 'format=json&versions=99')).json()) as { rows: unknown[] };
+    expect(none.rows).toHaveLength(0);
+    expect((await data('example-course-feedback', LEAD, 'format=json&courses=../x')).status).toBe(400);
+    expect((await data('example-course-feedback', LEAD, 'format=json&courses=k0000000000')).status).toBe(404);
+    expect((await data('example-course-feedback', LEAD, 'format=json&fields=a;b')).status).toBe(400);
+    expect((await data('example-course-feedback', LEAD, 'format=exe')).status).toBe(400);
+  });
+
+  it('moves data of the former shared files into per-app databases', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-container-migrate-'));
+    const answers = new DatabaseSync(path.join(dir, 'answers.sqlite'));
+    answers.exec(`CREATE TABLE responses (id TEXT PRIMARY KEY, survey_id TEXT NOT NULL, survey_version INTEGER NOT NULL,
+      dedupe_key TEXT NOT NULL UNIQUE, course_id TEXT, size INTEGER NOT NULL, answers TEXT NOT NULL) WITHOUT ROWID`);
+    answers.prepare('INSERT INTO responses VALUES (?, ?, ?, ?, ?, ?, ?)').run('r1', 'alpha', 1, 'd1', 'kaaaaaaaaaa', 9, '{"A":1}');
+    answers.prepare('INSERT INTO responses VALUES (?, ?, ?, ?, ?, ?, ?)').run('r2', 'beta', 1, 'd2', null, 9, '{"B":2}');
+    answers.close();
+    const codes = new DatabaseSync(path.join(dir, 'codes.sqlite'));
+    codes.exec(`CREATE TABLE courses (id TEXT PRIMARY KEY, survey_id TEXT NOT NULL, label TEXT NOT NULL, event_date TEXT NOT NULL,
+      event_date_end TEXT, closed INTEGER NOT NULL DEFAULT 0, released INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID;
+      CREATE TABLE access_codes (survey_id TEXT NOT NULL, code TEXT NOT NULL, course_id TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0,
+      revoked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (survey_id, code)) WITHOUT ROWID`);
+    codes.prepare('INSERT INTO courses (id, survey_id, label, event_date) VALUES (?, ?, ?, ?)').run('kaaaaaaaaaa', 'alpha', 'Kurs A', '2026-11-01');
+    codes.prepare('INSERT INTO access_codes (survey_id, code, course_id, used) VALUES (?, ?, ?, 1)').run('alpha', 'ABCD2345', 'kaaaaaaaaaa');
+    codes.close();
+    const migrated = new Store(dir);
+    expect(fs.existsSync(path.join(dir, 'answers.sqlite'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'codes.sqlite'))).toBe(false);
+    expect(migrated.rawResponses('alpha')).toEqual([{ surveyVersion: 1, courseId: 'kaaaaaaaaaa', course: 'Kurs A', answers: { A: 1 } }]);
+    expect(migrated.rawResponses('beta')).toEqual([{ surveyVersion: 1, courseId: null, course: null, answers: { B: 2 } }]);
+    expect(migrated.databaseInfo('alpha')).toMatchObject({ responses: 1, courses: 1, codes: 1, usedCodes: 1 });
+    expect(migrated.databaseInfo('beta')).toMatchObject({ responses: 1, courses: 0 });
+    migrated.close();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Inline } from '../components/RichText.tsx';
 import { Shell } from '../components/Shell.tsx';
 import { Courses, PrintSheet, type CodeSheet } from './Courses.tsx';
+import { DataExplorer } from './Data.tsx';
 import { downloadJson, downloadSummaryXlsx, downloadXlsx } from './exportXlsx.ts';
 import { eventLine } from './format.ts';
 import { adminFetch } from './http.ts';
@@ -209,7 +210,7 @@ export function Results({ surveyId }: { surveyId: string }) {
             ? ` Ein Kurs wird erst freigegeben, wenn er abgeschlossen ist („Kurs abschließen“ oder „Umfrage schließen“) und mindestens ${k} Antworten hat. Die Freigabe ist endgültig: Ein freigegebener Kurs kann nicht wieder geöffnet werden.`
             : ` So lässt sich keine Antwort einer einzelnen Person zuordnen. Ab ${k} Antworten ist das Schließen der Umfrage endgültig.`}{' '}
           Antworten tragen weder Datum noch Uhrzeit; Freitexte stehen getrennt von den Bewertungen und in zufälliger Reihenfolge.
-          {!isGlobal && ' Die Kursleitung erhält Zusammenfassungen und Freitexte; einzelne Antwortzeilen kann nur die Gesamtverwaltung herunterladen.'}
+          {' Diese Freigaberegeln gelten für die Zusammenfassung unten. Im Bereich „Datenbank“ stehen alle Einzelantworten dieser Umfrage zur Verfügung.'}
         </p>
         {!shown && withCodes && courses.length > 0 && (
           <p>
@@ -287,6 +288,8 @@ export function Results({ surveyId }: { surveyId: string }) {
           onChanged={() => load()}
           onSheet={setSheet}
         />}
+
+      <DataExplorer surveyId={surveyId} />
 
       {shown && (
         <>

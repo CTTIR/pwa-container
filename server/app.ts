@@ -5,6 +5,7 @@ import { compactAnswers, formatCode, normalizeCode, validateAnswers, type Survey
 import type { AdminAuth } from './auth.ts';
 import { MIN_GROUP, type Store } from './db.ts';
 import { STATIC_LIMITS, validAppId, type AppEntry, type AppRegistry } from './registry.ts';
+import { buildDataset, codebookCsv, datasetCsv, datasetRds, parseFilter } from './data.ts';
 import { buildCsv, csvField, exportKeys, fieldInfos, ratingRows, summarize, textKeys, textsByKey, textsCsv } from './report.ts';
 import { collectColumns, headerFor, rowFor, withinShape } from '../shared/records.ts';
 
@@ -507,7 +508,7 @@ export function createApp(deps: AppDeps) {
     res.end();
   }
 
-  function download(res: ServerResponse, filename: string, type: string, body: string): void {
+  function download(res: ServerResponse, filename: string, type: string, body: string | Buffer): void {
     res.writeHead(200, {
       'Content-Type': type,
       'Content-Disposition': `attachment; filename="${filename.replace(/[^A-Za-z0-9._-]/g, '_')}"`,
@@ -691,6 +692,41 @@ export function createApp(deps: AppDeps) {
       const courseParam = url.searchParams.get('course') || undefined;
       if (courseParam && !store.courseExists(def.id, courseParam)) return sendJson(res, 404, { error: 'unknown course' });
 
+      if (parts[4] === 'data' && parts.length === 5) {
+        // Full data of this one survey (its own database only): single responses with free
+        // texts, version and course; filtered by course, version and field; JSON, CSV or RDS.
+        if (method !== 'GET') return sendJson(res, 405, { error: 'method_not_allowed' });
+        const filter = parseFilter(url.searchParams);
+        if (typeof filter === 'string') return sendJson(res, 400, { error: filter });
+        const known = new Set(store.courseLabels(def.id).map((c) => c.id));
+        if (filter.courses?.some((c) => c !== null && !known.has(c))) return sendJson(res, 404, { error: 'unknown course' });
+        const raw = store.rawResponses(def.id, { courses: filter.courses, versions: filter.versions });
+        const data = buildDataset(def, raw, filter);
+        const subset = filter.courses || filter.versions || filter.fields ? '_teilmenge' : '';
+        const format = url.searchParams.get('format') ?? 'json';
+        const sep = url.searchParams.get('sep') === 'comma' ? ',' : ';';
+        log(`data of ${def.id} read by ${role} administration (${format}, ${data.rows.length} rows)`);
+        switch (format) {
+          case 'json':
+            return sendJson(res, 200, {
+              ...data,
+              courses: store.courseLabels(def.id),
+              versions: store.versionsOf(def.id),
+              role,
+            });
+          case 'json-file':
+            return download(res, `${def.id}_daten${subset}.json`, 'application/json; charset=utf-8', JSON.stringify(data, null, 2));
+          case 'csv':
+            return download(res, `${def.id}_daten${subset}.csv`, 'text/csv; charset=utf-8', datasetCsv(data, sep));
+          case 'codebook.csv':
+            return download(res, `${def.id}_codebuch.csv`, 'text/csv; charset=utf-8', codebookCsv(data, sep));
+          case 'rds':
+            return download(res, `${def.id}_daten${subset}.rds`, 'application/octet-stream', datasetRds(data));
+          default:
+            return sendJson(res, 400, { error: 'format must be json, json-file, csv, codebook.csv or rds' });
+        }
+      }
+
       if (parts[4] === 'status' && parts.length === 5) {
         // Close or reopen the whole survey. Closing also closes every course: all codes expire.
         if (method !== 'POST') return sendJson(res, 405, { error: 'method_not_allowed' });
@@ -809,11 +845,6 @@ export function createApp(deps: AppDeps) {
         if (released) rows = def.accessCodes ? store.list(def.id, view.releasedCourseIds, view.uncodedReleased) : store.list(def.id);
       }
       const suffix = courseParam ? `_${courseParam}` : '';
-      // Rows per response are for the global administration only; organisers get summaries
-      // and separately shuffled free texts.
-      if ((parts[4] === 'responses' || parts[4] === 'export.csv') && role !== 'global') {
-        return sendJson(res, 403, { error: 'only the global administration can download single responses' });
-      }
       switch (parts[4]) {
         case 'summary':
           sendJson(res, 200, {
@@ -907,6 +938,14 @@ export function createApp(deps: AppDeps) {
 
     if (area === 'whoami' && method === 'GET') {
       sendJson(res, 200, { role });
+      return;
+    }
+
+    if (area === 'databases' && parts.length === 3 && method === 'GET') {
+      // Metadata of every app's own database (global administration only).
+      sendJson(res, 200, {
+        databases: registry.list().map((app) => ({ app: appInfo(app), ...store.databaseInfo(app.id) })),
+      });
       return;
     }
 
