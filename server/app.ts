@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { compactAnswers, formatCode, validateAnswers, type SurveyDefinition } from '../shared/schema.ts';
+import { compactAnswers, formatCode, normalizeCode, validateAnswers, type SurveyDefinition } from '../shared/schema.ts';
 import type { AdminAuth } from './auth.ts';
 import { MIN_GROUP, type Store } from './db.ts';
 import { STATIC_LIMITS, validAppId, type AppEntry, type AppRegistry } from './registry.ts';
@@ -324,19 +324,24 @@ export function createApp(deps: AppDeps) {
       sendJson(res, 422, { error: 'invalid', fields: problems, version: def.version });
       return;
     }
+    // One normalized code value for every decision below and for storing.
+    if (payload.code !== undefined && payload.code !== null && typeof payload.code !== 'string') {
+      sendJson(res, 422, { error: 'code_unknown' });
+      return;
+    }
+    const code = typeof payload.code === 'string' ? normalizeCode(payload.code) : '';
     // Optional-code surveys whose code-less answers are released accept none without a code.
-    if (def.accessCodes === 'optional' && !payload.code && store.uncodedReleased(def.id)) {
+    if (def.accessCodes === 'optional' && !code && store.uncodedReleased(def.id)) {
       sendJson(res, 422, { error: 'code_required' });
       return;
     }
-    // Surveys without codes are open to anyone with the link: limit the pace per survey
+    // Answers without a code are open to anyone with the link: limit the pace per survey
     // (counted only for well-formed answers, so junk cannot use up the budget).
-    if ((!def.accessCodes || !payload.code) && !submitBucket(def.id).take()) {
+    if ((!def.accessCodes || !code) && !submitBucket(def.id).take()) {
       sendJson(res, 429, { error: 'busy' });
       return;
     }
     const answers = compactAnswers(def, payload.answers as Record<string, never>);
-    const code = typeof payload.code === 'string' ? payload.code : undefined;
     const result = store.insert(
       def.id,
       def.version,
@@ -344,7 +349,7 @@ export function createApp(deps: AppDeps) {
       answers,
       { maxResponses: def.maxResponses ?? DEFAULT_MAX_RESPONSES, maxBytes: MAX_SURVEY_BYTES },
       def.accessCodes,
-      code,
+      code || undefined,
     );
     switch (result) {
       case 'stored':

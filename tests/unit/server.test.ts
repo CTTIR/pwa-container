@@ -510,6 +510,31 @@ describe('courses and single-use codes', () => {
   });
 });
 
+describe('optional codes', () => {
+  it('accepts no further code-less answers once those are released, also with disguised empty codes', async () => {
+    const d = JSON.parse(fs.readFileSync(path.join(surveysDir, 'example-course-feedback', 'survey.json'), 'utf8'));
+    d.id = 'optional-survey';
+    d.accessCodes = 'optional';
+    const w = { Authorization: ADMIN, ...WRITE };
+    expect((await fetch(`${base}/admin/api/apps/surveys`, { method: 'POST', headers: w, body: JSON.stringify(d) })).status).toBe(201);
+    const send = (n: number, code?: unknown) =>
+      fetch(`${base}/api/surveys/optional-survey/responses`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ submissionId: `${String(n).padStart(8, '0')}-6666-4666-8666-666666666666`, surveyVersion: 1, answers, code }),
+      });
+    for (let i = 1; i <= 5; i++) expect((await send(i)).status).toBe(201);
+    await fetch(`${base}/admin/api/results/optional-survey/status`, { method: 'POST', headers: w, body: JSON.stringify({ closed: true }) });
+    const summary = (await (await fetch(`${base}/admin/api/results/optional-survey/summary`, { headers: { Authorization: ADMIN } })).json()) as { released: boolean };
+    expect(summary.released).toBe(true);
+    await fetch(`${base}/admin/api/results/optional-survey/status`, { method: 'POST', headers: w, body: JSON.stringify({ closed: false }) });
+    expect((await send(6)).status).toBe(422);
+    expect((await send(7, '----')).status).toBe(422);
+    expect((await send(8, 1)).status).toBe(422);
+    expect(store.count('optional-survey')).toBe(5);
+  });
+});
+
 describe('records of web apps', () => {
   const auth = { Authorization: ADMIN, 'X-Requested-With': 'pwa-container' };
   const send = (body: unknown) =>

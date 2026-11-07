@@ -346,6 +346,8 @@ export class Store {
     let consumed: string | null = null;
     const code = rawCode ? normalizeCode(rawCode) : '';
     if (codeMode === 'required' && !code) return 'code_required';
+    // Defence in depth: released code-less answers of optional-code surveys get no additions.
+    if (codeMode === 'optional' && !code && this.uncodedReleased(surveyId)) return 'code_required';
     if (codeMode && code) {
       const row = this.codes
         .prepare(
