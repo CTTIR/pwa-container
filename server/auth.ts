@@ -91,6 +91,9 @@ const PENALTY_QUEUE = 4;
 const PENALTY_INTERVAL_MS = 1000;
 /** More failures than this within GLOBAL_WINDOW_MS count as a broad attack. */
 const GLOBAL_ALARM_FAILURES = 200;
+/** Sources that signed in successfully stay on the normal path during a broad attack this long. */
+const TRUSTED_FOR_MS = 30 * 24 * 60 * 60_000;
+const MAX_TRUSTED_SOURCES = 1000;
 
 interface SourceState {
   failures: number[];
@@ -132,6 +135,11 @@ export class AdminAuth {
   private penaltyActive = 0;
   private penaltyWaiting: (() => void)[] = [];
   private lastPenaltyCheck = 0;
+  /**
+   * Sources (as keyed hashes) that signed in successfully, with expiry. Only in memory; used so
+   * that known administrators are not slowed down during a broad attack.
+   */
+  private trusted = new Map<string, number>();
   /**
    * Sign-in attempts per source group. Kept only in memory, only as keyed hashes with a secret
    * that changes on every start, and only for the administration sign-in.
@@ -239,9 +247,9 @@ export class AdminAuth {
    *   growing delay after each failure;
    * - after SOURCE_MAX_FAILURES failures the source cools down (10 s, doubling per further
    *   failure, at most 5 min);
-   * - checks of cooling-down sources, and of every source with own recent failures while more
-   *   than GLOBAL_ALARM_FAILURES failures happened in the last five minutes, go through one
-   *   narrow lane (sources without failures are never slowed down): one check at a
+   * - checks of cooling-down sources, and of every source that has not signed in successfully
+   *   before while more than GLOBAL_ALARM_FAILURES failures happened in the last five minutes,
+   *   go through one narrow lane: one check at a
    *   time and at most one per second overall. Guessing is therefore limited to about one
    *   attempt per second in total, while correct credentials are never refused outright (under
    *   load they may get 'busy' and have to try again).
@@ -251,9 +259,10 @@ export class AdminAuth {
     if (!header || !header.startsWith('Basic ')) return null;
     const now = this.clock();
     const state = this.sourceState(source, now);
-    // During a broad attack only sources that failed themselves are slowed down; clean sources
-    // (e.g. the real administrators) keep the normal path.
-    const slow = state.blockedUntil > now || (state.failures.length > 0 && this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES);
+    // During a broad attack every source goes through the narrow lane, except sources that have
+    // signed in successfully before (an attacker cannot get that status for free).
+    const trusted = (this.trusted.get(state.key) ?? 0) > now;
+    const slow = state.blockedUntil > now || (!trusted && this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES);
     const limit = state.key === OVERFLOW_KEY ? OVERFLOW_MAX_CONCURRENT : SOURCE_MAX_CONCURRENT;
     if (state.inFlight >= limit) return 'busy';
     state.inFlight += 1;
@@ -262,6 +271,16 @@ export class AdminAuth {
       result = slow ? await this.withPenaltySlot(() => this.check(header, surveyId)) : await this.check(header, surveyId);
     } finally {
       state.inFlight -= 1;
+    }
+    if (result === 'global' || result === 'survey' || result === 'other') {
+      if (state.key !== OVERFLOW_KEY) {
+        if (this.trusted.size >= MAX_TRUSTED_SOURCES) {
+          for (const [k, until] of this.trusted) if (until <= now) this.trusted.delete(k);
+          if (this.trusted.size >= MAX_TRUSTED_SOURCES) this.trusted.delete(this.trusted.keys().next().value as string);
+        }
+        this.trusted.set(state.key, now + TRUSTED_FOR_MS);
+      }
+      return result;
     }
     if (result !== null) return result;
     const failedAt = this.clock();

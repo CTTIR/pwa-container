@@ -127,8 +127,9 @@ Brute-force protection:
 - **Cooldown:** after 10 failures within 15 minutes the client cools down (10 seconds, doubling up
   to 5 minutes).
 - **Narrow lane:** password checks of cooling-down clients go through one shared lane. While more
-  than 200 failures happened in the last five minutes, so do those of every client that has
-  failed itself; clients without failures are never slowed down. It runs one check at a
+  than 200 failures happened in the last five minutes, so do those of every client that has not
+  signed in successfully before. Successful clients are remembered in memory only, as keyed
+  hashes, for 30 days or until a restart. It runs one check at a
   time and at most one per second in total.
   - Guessing is therefore limited to about one attempt per second overall.
   - Correct credentials are never refused outright; under load the answer may be "try again".
