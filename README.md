@@ -22,12 +22,19 @@ subdomain:
   - Open, close, enable or disable an app.
   - Set or randomise its subdomain, and show or download its QR code.
   - View survey results and export them as XLSX, CSV or JSON.
+  - Work with all single responses of a survey in its "Datenbank" section: filters by course,
+    version and field, table, charts, per-course comparison, and downloads as CSV, XLSX, JSON or
+    RDS (R data frame with labels) with a codebook.
+  - See every app's own database in the "Datenbanken" overview (global administration).
   - Upload new surveys and apps, and delete test responses.
 
 Survey responses are anonymous by construction:
 - **What is stored:** the answers, the survey version and, for coded surveys, the course. There is
   **no date or time of any kind**, no IP address, user agent, cookie or participant code, and the
   server writes no request logs.
+- **One database per app:** each app has its own `db/<app>/answers.sqlite` and
+  `db/<app>/codes.sqlite`; `apps.sqlite` is only the register. A survey's administration reaches
+  its own database and nothing else.
 - **Codes kept apart from answers:** a single-use code only gets a "used" mark in `codes.sqlite`.
   The response is written separately to `answers.sqlite` under a fresh random id, never in the
   same transaction.
@@ -35,11 +42,17 @@ Survey responses are anonymous by construction:
   commit, with `secure_delete`. `answers.sqlite` is rewritten in random-id order after responses
   arrive (VACUUM), and the other files hourly. No log and no page layout reveals which code went
   with which answer, or the order of submissions.
-- **Only closed groups of five:** results are released when the group is closed (the course for
-  coded surveys, otherwise the survey) and has at least 5 responses. Organisers cannot watch
-  answers arrive or single out small groups.
-  - Free texts are only shown separately from ratings, shuffled per question.
+- **Results page: only closed groups of five.** The summaries on the results page are released
+  when the group is closed (the course for coded surveys, otherwise the survey) and has at least 5
+  responses.
+  - Free texts are only shown there separately from ratings, shuffled per question.
   - Nobody can see which individual code was used.
+- **Full data for the survey's own administration:** the global administration and the survey's
+  own credentials can read every stored single response of that survey, including free texts,
+  version and course, at any time through the "Datenbank" section
+  (`/admin/api/results/<id>/data`). Rows come in random order and without any date, but whoever
+  holds these credentials can watch the number of responses grow and may recognise people in small
+  courses. State this in the survey's privacy notice.
 - **Closing the survey:** closing it (administration or organiser entry) stops all answers and
   expires every code, because all courses close with it.
 
@@ -50,7 +63,7 @@ Survey responses are anonymous by construction:
 | Server | Node.js 24 (`node:http`, `node:sqlite`), no runtime dependencies, runs TypeScript directly |
 | Participant app | React 18 + Vite, installable PWA (Workbox service worker), offline outbox with automatic resend |
 | Administration | Second page of the same build, served only after HTTP Basic authentication |
-| Storage | `apps.sqlite`, `codes.sqlite`, `answers.sqlite` in `/data`; uploaded apps in `/data/apps/<id>/` |
+| Storage | `apps.sqlite` (register) and one database per app in `/data/db/<id>/` (`answers.sqlite`, `codes.sqlite`); uploaded apps in `/data/apps/<id>/`. Data of the former shared `codes.sqlite` / `answers.sqlite` is moved there on start. |
 | Routing | `<label>.APP_DOMAIN` per app; either a label list for a host-side renderer (`ROUTES_JSON_FILE`, recommended) or a Traefik file-provider file (`TRAEFIK_DYNAMIC_FILE`) |
 
 ```
@@ -78,6 +91,9 @@ A survey is one `survey.json`. See
   - `choice`: single or multiple choice
 - **Content:** sections with optional descriptions and scale legend, intro and privacy text, a
   thank-you text, and `**bold**` emphasis in texts.
+- **Notice:** an optional `notice` (`heading`, `paragraphs`, `confirm`) is shown at the top of the
+  start page, e.g. for a test version. The start button stays disabled until its checkbox is
+  ticked, and the server refuses answers without that confirmation (`notice_not_confirmed`).
 - **Settings:**
   - `opensAt` / `closesAt` and `maxResponses`. The administration can also open or close a survey
     by hand.
@@ -160,8 +176,9 @@ if requests arrive through a proxy without it.
 Create a random password and its hash with `docker exec pwa-container node server/cli.ts new-password`,
 or hash your own (16 characters or more) with
 `printf '%s' 'long password' | docker exec -i pwa-container node server/cli.ts hash-password`.
-Global users manage everything. Survey (or app) users see only that survey's results, courses and
-codes, or that app's records. They can sign in at `<label>.APP_DOMAIN/admin` or
+Global users manage everything. Survey (or app) users see only that survey's results, courses,
+codes and single responses (the "Datenbank" section), or that app's records. Deleting responses is
+reserved for the global administration. Survey users sign in at `<label>.APP_DOMAIN/admin` or
 `ADMIN_HOST/admin/results/<id>`. The file is re-read on
 every request, so changes apply without a restart.
 
@@ -204,7 +221,9 @@ These limits are inherent; deployments should state them.
   isolate a real participant in a small course.
   - Hand out slips at random, keep no list of who got which slip, and block slips that were not
     handed out.
-  - Course leads see summaries only; single rows are for the global administration.
+  - The survey's own administration can read every single response, including free texts, at
+    any time. Give these credentials only to people who may see all answers, and say so in the
+    privacy notice.
 - **Operator access.** Root on the server, or the hosting provider, can read the databases and
   the traffic between the reverse proxy and the container while the process runs. Use an
   encrypted volume and encrypted backups, and do not back up while a course is open.
