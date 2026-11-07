@@ -60,17 +60,41 @@ export type AuthResult = 'global' | 'survey' | 'other' | 'busy' | 'blocked' | nu
 
 const MAX_PARALLEL_CHECKS = 2;
 const MAX_QUEUED_CHECKS = 50;
-const FAILURE_WINDOW_MS = 5 * 60_000;
-/** Per source (client address): failed sign-ins allowed per window before it is refused. */
+const GLOBAL_WINDOW_MS = 5 * 60_000;
+/** Per source: failures within the window after which further failures are answered with 429. */
 export const SOURCE_MAX_FAILURES = 10;
 const SOURCE_WINDOW_MS = 15 * 60_000;
-/** Per source: password checks that may run or wait at the same time. */
+/** Per source: sign-ins that may be in progress (checking or pausing after a failure) at once. */
 const SOURCE_MAX_CONCURRENT = 2;
-const MAX_TRACKED_SOURCES = 10_000;
+const MAX_DELAY_MS = 10_000;
+const OVERFLOW_KEY = 'overflow';
 
 interface SourceState {
   failures: number[];
   inFlight: number;
+}
+
+export interface AdminAuthOptions {
+  /** Upper bound of tracked sources; new sources share one bucket beyond it. */
+  maxSources?: number;
+  /** Pause implementation (tests replace it). */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Groups client addresses: IPv4 per address, IPv6 per /64 network (one subscriber usually
+ * controls a whole /64), IPv4-mapped IPv6 as IPv4.
+ */
+export function sourceGroup(address: string): string {
+  let a = address.trim().toLowerCase();
+  if (a.startsWith('::ffff:') && a.includes('.')) a = a.slice(7);
+  if (!a.includes(':')) return `v4:${a}`;
+  a = a.split('%')[0];
+  const [head, tail = ''] = a.split('::');
+  const left = head ? head.split(':') : [];
+  const right = a.includes('::') && tail ? tail.split(':') : [];
+  const groups = a.includes('::') ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right] : left;
+  return `v6:${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}`;
 }
 
 export class AdminAuth {
@@ -79,14 +103,18 @@ export class AdminAuth {
   private active = 0;
   private waiting: (() => void)[] = [];
   /**
-   * Sign-in attempts per source. Sources are kept only in memory, only as keyed hashes with a
-   * secret that changes on every start, and only for the administration sign-in.
+   * Sign-in attempts per source group. Kept only in memory, only as keyed hashes with a secret
+   * that changes on every start, and only for the administration sign-in.
    */
   private sources = new Map<string, SourceState>();
   private sourceSecret = randomBytes(32);
+  private maxSources: number;
+  private sleep: (ms: number) => Promise<void>;
 
-  constructor(file: string) {
+  constructor(file: string, options: AdminAuthOptions = {}) {
     this.file = file;
+    this.maxSources = options.maxSources ?? 10_000;
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   private read(): CredentialFile {
@@ -97,30 +125,37 @@ export class AdminAuth {
     }
   }
 
-  /**
-   * Pause before answering a failed attempt. It grows with the number of recent failures, so
-   * guessing gets slower, but it never blocks correct credentials.
-   */
-  failureDelay(now = Date.now()): number {
-    this.failures = this.failures.filter((t) => now - t < FAILURE_WINDOW_MS);
-    return Math.min(600 + this.failures.length * 150, 5000);
+  private recentGlobalFailures(now: number): number {
+    this.failures = this.failures.filter((t) => now - t < GLOBAL_WINDOW_MS);
+    return this.failures.length;
   }
 
-  private sourceState(source: string, now: number): SourceState {
-    const key = createHmac('sha256', this.sourceSecret).update(source).digest('base64url');
+  /** Pause after a failed attempt: grows with the source's and (a little) with all recent failures. */
+  delayFor(state: SourceState, now = Date.now()): number {
+    return Math.min(600 + 300 * state.failures.length + 10 * this.recentGlobalFailures(now), MAX_DELAY_MS);
+  }
+
+  private sourceState(address: string, now: number): SourceState {
+    const prune = (st: SourceState) => {
+      st.failures = st.failures.filter((t) => now - t < SOURCE_WINDOW_MS);
+      return st;
+    };
+    let key = createHmac('sha256', this.sourceSecret).update(sourceGroup(address)).digest('base64url');
+    const existing = this.sources.get(key);
+    if (existing) return prune(existing);
+    if (this.sources.size >= this.maxSources) {
+      // Only forget sources with nothing to remember; never evict a source with recent failures.
+      for (const [k, v] of this.sources) {
+        if (k !== OVERFLOW_KEY && v.inFlight === 0 && prune(v).failures.length === 0) this.sources.delete(k);
+      }
+      if (this.sources.size >= this.maxSources) key = OVERFLOW_KEY;
+    }
     let state = this.sources.get(key);
     if (!state) {
-      if (this.sources.size >= MAX_TRACKED_SOURCES) {
-        for (const [k, v] of this.sources) {
-          if (v.inFlight === 0 && v.failures.every((t) => now - t >= SOURCE_WINDOW_MS)) this.sources.delete(k);
-        }
-        if (this.sources.size >= MAX_TRACKED_SOURCES) this.sources.delete(this.sources.keys().next().value as string);
-      }
       state = { failures: [], inFlight: 0 };
       this.sources.set(key, state);
     }
-    state.failures = state.failures.filter((t) => now - t < SOURCE_WINDOW_MS);
-    return state;
+    return prune(state);
   }
 
   /** Limits concurrent password checks so a flood of attempts cannot exhaust the CPU. */
@@ -142,25 +177,25 @@ export class AdminAuth {
    * Checks an Authorization header. Global credentials give full access; survey credentials
    * only give access to the results of that one survey.
    *
-   * Brute-force protection works per source: a source with too many recent failures is refused
-   * before any password check ('blocked'), and each source may only run a few checks at once
-   * ('busy'), so one client can neither guess quickly nor fill the shared queue. Other sources
-   * keep working normally.
+   * Correct credentials are always accepted. Failed attempts are slowed down per source: the
+   * source keeps its sign-in slot during a growing pause (up to 10 s) and may only have two
+   * sign-ins in progress, which caps how fast any one source can guess. Sources with many recent
+   * failures get 'blocked' (HTTP 429) for further wrong passwords.
    */
   async authenticate(header: string | undefined, surveyId?: string, source = 'unknown'): Promise<AuthResult> {
     if (!header || !header.startsWith('Basic ')) return null;
-    const now = Date.now();
-    const state = this.sourceState(source, now);
-    if (state.failures.length >= SOURCE_MAX_FAILURES) return 'blocked';
+    const state = this.sourceState(source, Date.now());
     if (state.inFlight >= SOURCE_MAX_CONCURRENT) return 'busy';
     state.inFlight += 1;
     try {
       const result = await this.check(header, surveyId);
-      if (result === null) {
-        state.failures.push(Date.now());
-        this.failures.push(Date.now());
-      }
-      return result;
+      if (result !== null) return result;
+      const wasBlocked = state.failures.length >= SOURCE_MAX_FAILURES;
+      const now = Date.now();
+      state.failures.push(now);
+      this.failures.push(now);
+      await this.sleep(this.delayFor(state, now));
+      return wasBlocked ? 'blocked' : null;
     } finally {
       state.inFlight -= 1;
     }

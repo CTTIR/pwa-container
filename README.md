@@ -83,15 +83,20 @@ Credentials live in a JSON file mounted at `/config/admins.json` and are never s
 }
 ```
 
-Brute-force protection works per client address:
-- After 10 failed sign-ins within 15 minutes, that client is refused until the window has passed.
-- Each client may only run two password checks at a time.
-- Every failure is answered after a growing pause.
+Brute-force protection works per client:
+- IPv4 addresses count individually, IPv6 addresses per /64 network.
+- Correct credentials are always accepted. Only failed attempts are slowed down: after each
+  failure the client keeps its sign-in slot for a growing pause of up to 10 seconds.
+- A client may only have two sign-ins in progress at once, which caps how fast it can guess.
+- After 10 failures within 15 minutes, further wrong passwords from that client get HTTP 429.
+- Clients with recent failures are never forgotten. If the table of clients is full, new
+  clients share one common bucket.
 
-Other clients are not affected. Client addresses are needed for this, so the server keeps them for
-this one purpose only. They are held only in memory, as keyed hashes whose secret changes on every
-restart, and they are never written to disk or logs. Participant requests are never looked at.
-Behind Traefik set `TRUST_PROXY=1` so the address set by Traefik is used.
+Client addresses are needed for this, so the server keeps them for this one purpose only. They are
+held only in memory, as keyed hashes whose secret changes on every restart, and they are never
+written to disk or logs. Participant requests are never looked at.
+Behind Traefik set `TRUST_PROXY=1` so the address set by Traefik is used. The server logs a warning
+if requests arrive through a proxy without it.
 
 Create a hash with `printf '%s' 'long password' | docker exec -i pwa-container node server/cli.ts hash-password`.
 Global users manage everything; survey users only see that survey's results. The file is re-read on

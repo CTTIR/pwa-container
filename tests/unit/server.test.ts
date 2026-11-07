@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { createApp } from '../../server/app.ts';
-import { AdminAuth, SOURCE_MAX_FAILURES, hashPassword } from '../../server/auth.ts';
+import { AdminAuth, SOURCE_MAX_FAILURES, hashPassword, sourceGroup } from '../../server/auth.ts';
 import { Store } from '../../server/db.ts';
 import { AppRegistry } from '../../server/registry.ts';
 
@@ -194,23 +194,53 @@ describe('administration', () => {
 
 describe('admin authentication', () => {
   const wrong = 'Basic ' + Buffer.from('admin:wrong password!!').toString('base64');
+  const noPause = { sleep: async () => {} };
 
-  it('blocks a guessing source, but not other sources', async () => {
-    const auth = new AdminAuth(credFile);
+  it('never locks out correct credentials, also from a guessing source', async () => {
+    const auth = new AdminAuth(credFile, noPause);
     for (let i = 0; i < SOURCE_MAX_FAILURES; i++) expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBeNull();
     expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked');
-    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('blocked');
+    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('global');
     expect(await auth.authenticate(ADMIN, undefined, '198.51.100.2')).toBe('global');
     expect(await auth.authenticate(LEAD, 'example-course-feedback', '198.51.100.2')).toBe('survey');
     expect(await auth.authenticate(LEAD, 'another-survey', '198.51.100.2')).toBe('other');
-    expect(auth.failureDelay()).toBeGreaterThan(600);
-    expect(auth.failureDelay()).toBeLessThanOrEqual(5000);
   });
 
-  it('limits parallel checks per source', async () => {
-    const auth = new AdminAuth(credFile);
-    const results = await Promise.all(Array.from({ length: 5 }, () => auth.authenticate(wrong, undefined, '203.0.113.9')));
+  it('pauses failed attempts while holding the source slot, which caps parallel guessing', async () => {
+    const pauses: number[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const auth = new AdminAuth(credFile, {
+      sleep: (ms) => {
+        pauses.push(ms);
+        return gate;
+      },
+    });
+    const pending = Array.from({ length: 5 }, () => auth.authenticate(wrong, undefined, '203.0.113.9'));
+    await new Promise((r) => setTimeout(r, 300));
+    const busyNow = await auth.authenticate(wrong, undefined, '203.0.113.9');
+    expect(busyNow).toBe('busy');
+    release();
+    const results = await Promise.all(pending);
     expect(results.filter((r) => r === 'busy').length).toBe(3);
+    expect(Math.min(...pauses)).toBeGreaterThanOrEqual(600);
     expect(await auth.authenticate(ADMIN, undefined, '198.51.100.3')).toBe('global');
+  });
+
+  it('groups IPv6 addresses per /64 network', async () => {
+    expect(sourceGroup('2001:db8:1:2::1')).toBe(sourceGroup('2001:0db8:0001:0002:ffff::99'));
+    expect(sourceGroup('2001:db8:1:2::1')).not.toBe(sourceGroup('2001:db8:1:3::1'));
+    expect(sourceGroup('::ffff:192.0.2.5')).toBe('v4:192.0.2.5');
+    const auth = new AdminAuth(credFile, noPause);
+    for (let i = 0; i < SOURCE_MAX_FAILURES; i++) await auth.authenticate(wrong, undefined, `2001:db8:1:2::${i + 1}`);
+    expect(await auth.authenticate(wrong, undefined, '2001:db8:1:2:abcd::5')).toBe('blocked');
+    expect(await auth.authenticate(wrong, undefined, '2001:db8:1:3::1')).toBeNull();
+  });
+
+  it('does not forget sources with recent failures when the table is full', async () => {
+    const auth = new AdminAuth(credFile, { ...noPause, maxSources: 3 });
+    for (let i = 0; i < SOURCE_MAX_FAILURES; i++) await auth.authenticate(wrong, undefined, '203.0.113.1');
+    for (let n = 2; n < 40; n++) await auth.authenticate(wrong, undefined, `203.0.113.${n}`);
+    expect(await auth.authenticate(wrong, undefined, '203.0.113.1')).toBe('blocked');
   });
 });

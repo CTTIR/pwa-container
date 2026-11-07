@@ -187,7 +187,12 @@ export function createApp(deps: AppDeps) {
   const scheme = deps.publicScheme ?? 'https';
 
   /** Client address for the admin sign-in limiter only; never stored or logged. */
+  let warnedProxy = false;
   function signInSource(req: IncomingMessage): string {
+    if (!deps.trustProxy && req.headers['x-forwarded-for'] && !warnedProxy) {
+      warnedProxy = true;
+      log('requests arrive through a proxy (X-Forwarded-For) but TRUST_PROXY is not set; sign-in limits then apply to the proxy as one client');
+    }
     if (deps.trustProxy) {
       const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
       if (forwarded.length) return forwarded[forwarded.length - 1];
@@ -254,7 +259,7 @@ export function createApp(deps: AppDeps) {
     const role = await auth.authenticate(req.headers.authorization, surveyId, signInSource(req));
     if (role === 'global' || role === 'survey') return role;
     if (role === 'blocked') {
-      sendText(res, 429, 'Zu viele fehlgeschlagene Anmeldeversuche von dieser Verbindung. Bitte in 15 Minuten erneut versuchen.');
+      sendText(res, 429, 'Zu viele fehlgeschlagene Anmeldeversuche von dieser Verbindung. Bitte später erneut versuchen.');
       return null;
     }
     if (role === 'busy') {
@@ -265,9 +270,7 @@ export function createApp(deps: AppDeps) {
       sendText(res, 403, 'Diese Zugangsdaten gelten nicht für diese Seite.');
       return null;
     }
-    // Failed or missing credentials: answer after a pause that grows with recent failures.
-    const delay = req.headers.authorization ? auth.failureDelay() : 0;
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    // Failed attempts were already paused inside auth.authenticate.
     res.writeHead(401, {
       'WWW-Authenticate': `Basic realm="${REALM}", charset="UTF-8"`,
       'Content-Type': 'text/plain; charset=utf-8',
