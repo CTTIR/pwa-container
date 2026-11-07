@@ -44,6 +44,9 @@ export interface Dataset {
 
 const plain = (text: string) => text.replace(/\*\*/g, '');
 
+/** Separator of multiple-choice answers in every export format (CSV, XLSX, RDS). */
+export const MULTI_SEPARATOR = '|';
+
 /** Codebook of the current definition plus keys that only older versions used. */
 export function codebook(def: SurveyDefinition, rows: RawRow[]): CodebookEntry[] {
   const titles = new Map(def.sections.map((s) => [s.id, s.title]));
@@ -91,13 +94,13 @@ const BOM = '﻿';
 
 function cellText(v: AnswerValue | null | undefined): string {
   if (v === undefined || v === null) return '';
-  if (Array.isArray(v)) return v.join('|');
+  if (Array.isArray(v)) return v.join(MULTI_SEPARATOR);
   return String(v);
 }
 
 /** One CSV field: formula prefixes neutralised (free texts must not run as formulas), quoted when needed. */
 export function csvCell(input: string, sep: ',' | ';'): string {
-  if (/^[\s\u0000-\u001f]*[=+@-]/u.test(input) && !/^-?\d+(\.\d+)?$/.test(input)) input = "'" + input;
+  if ((/^[\s\u0000-\u001f]*[=+@-]/u.test(input) && !/^-?\d+(\.\d+)?$/.test(input)) || /^[\t\r]/.test(input)) input = "'" + input;
   return input.includes(sep) || /["\r\n]/.test(input) ? `"${input.replace(/"/g, '""')}"` : input;
 }
 
@@ -152,27 +155,39 @@ type RValue =
   | { kind: 'list'; values: RValue[]; attrs?: RAttr[] };
 type RAttr = [string, RValue];
 
+/** Big-endian writer into one growing buffer (no allocation per value). */
 class XdrWriter {
-  private chunks: Buffer[] = [];
+  private buf = Buffer.alloc(64 * 1024);
+  private len = 0;
+  private room(n: number): void {
+    if (this.len + n <= this.buf.length) return;
+    let size = this.buf.length * 2;
+    while (size < this.len + n) size *= 2;
+    const next = Buffer.alloc(size);
+    this.buf.copy(next, 0, 0, this.len);
+    this.buf = next;
+  }
   int(n: number): void {
-    const b = Buffer.alloc(4);
-    b.writeInt32BE(n);
-    this.chunks.push(b);
+    this.room(4);
+    this.buf.writeInt32BE(n, this.len);
+    this.len += 4;
   }
   real(n: number | null): void {
-    const b = Buffer.alloc(8);
+    this.room(8);
     if (n === null) {
       // R's NA_real_: a NaN with low word 1954.
-      b.writeUInt32BE(0x7ff00000, 0);
-      b.writeUInt32BE(1954, 4);
-    } else b.writeDoubleBE(n);
-    this.chunks.push(b);
+      this.buf.writeUInt32BE(0x7ff00000, this.len);
+      this.buf.writeUInt32BE(1954, this.len + 4);
+    } else this.buf.writeDoubleBE(n, this.len);
+    this.len += 8;
   }
   bytes(b: Buffer): void {
-    this.chunks.push(b);
+    this.room(b.length);
+    b.copy(this.buf, this.len);
+    this.len += b.length;
   }
   result(): Buffer {
-    return Buffer.concat(this.chunks);
+    return this.buf.subarray(0, this.len);
   }
 }
 
@@ -258,7 +273,6 @@ function rColumn(e: CodebookEntry, values: (AnswerValue | undefined)[]): RValue 
     if (e.values?.length) {
       attrs.push(['labels', { kind: 'int', values: e.values.map((x) => x.value), attrs: [['names', str(e.values.map((x) => x.label))]] }]);
     }
-    if (e.notApplicable) attrs.push(['na_values', str([e.notApplicable.value])]);
     return { kind: 'int', values: ints, attrs };
   }
   if (e.type === 'choice' && !e.multiple) {
@@ -270,7 +284,7 @@ function rColumn(e: CodebookEntry, values: (AnswerValue | undefined)[]): RValue 
   if (e.type === 'unknown' && values.every((v) => v === undefined || typeof v === 'number')) {
     return { kind: 'real', values: values.map((v) => (typeof v === 'number' ? v : null)), attrs: label(e) };
   }
-  return { kind: 'str', values: values.map((v) => (v === undefined ? null : Array.isArray(v) ? v.join('; ') : String(v))), attrs: label(e) };
+  return { kind: 'str', values: values.map((v) => (v === undefined ? null : Array.isArray(v) ? v.join(MULTI_SEPARATOR) : String(v))), attrs: label(e) };
 }
 
 /** The dataset as an R data.frame (one row per response), readable with readRDS(). */
@@ -311,7 +325,9 @@ const KEY = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 export function parseFilter(params: URLSearchParams): DataFilter | string {
   const list = (name: string) => {
     const v = params.get(name);
-    if (v === null || v === '') return undefined;
+    if (v === null) return undefined;
+    // Present but empty: an explicitly empty selection, which selects nothing.
+    if (v === '') return [];
     const parts = v.split(',');
     return parts.length > 500 ? null : parts;
   };

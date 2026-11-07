@@ -164,7 +164,7 @@ const BOM = '\uFEFF';
 
 export function csvField(input: string): string {
   // Spreadsheet formula prefixes are neutralised so a free-text answer cannot run as a formula.
-  if (/^[\s\u0000-\u001f]*[=+@-]/u.test(input) && !/^-?\d+(\.\d+)?$/.test(input)) input = "'" + input;
+  if ((/^[\s\u0000-\u001f]*[=+@-]/u.test(input) && !/^-?\d+(\.\d+)?$/.test(input)) || /^[\t\r]/.test(input)) input = "'" + input;
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, '""')}"` : input;
 }
 

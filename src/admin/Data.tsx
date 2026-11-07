@@ -1,3 +1,4 @@
+import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import type { AnswerValue, Answers } from '../../shared/schema.ts';
 import { fitCell, sheetNamer } from './exportXlsx.ts';
@@ -37,14 +38,16 @@ interface DataResponse {
 const NO_COURSE = 'none';
 const PAGE = 25;
 
-const dataUrl = (surveyId: string, params: Record<string, string>) => {
-  const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== ''));
+/** `params` with value undefined are left out; an empty string is an explicitly empty selection. */
+const dataUrl = (surveyId: string, params: Record<string, string | undefined>) => {
+  const q = new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => e[1] !== undefined));
   return `/admin/api/results/${encodeURIComponent(surveyId)}/data?${q.toString()}`;
 };
 
+/** Same separator for multiple choices as the server's CSV and RDS exports. */
 function cellText(v: AnswerValue | undefined): string {
   if (v === undefined) return '';
-  return Array.isArray(v) ? v.join(' | ') : String(v);
+  return Array.isArray(v) ? v.join('|') : String(v);
 }
 
 function fmt(n: number | null): string {
@@ -68,6 +71,29 @@ function median(xs: number[]): number | null {
  * Only data of this survey are requested (the server checks the sign-in for this survey).
  */
 export function DataExplorer({ surveyId }: { surveyId: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="admin-section data-explorer">
+      <h2 className="section-title">
+        <span>Datenbank</span>
+      </h2>
+      {open ? (
+        <DataView surveyId={surveyId} />
+      ) : (
+        <>
+          <p className="admin-note">Alle Einzelantworten dieser Umfrage ansehen, auswerten und herunterladen.</p>
+          <div className="admin-actions">
+            <button className="btn btn-primary" onClick={() => setOpen(true)}>
+              Datenbank öffnen
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function DataView({ surveyId }: { surveyId: string }) {
   const [data, setData] = useState<DataResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [courses, setCourses] = useState<Set<string> | null>(null);
@@ -114,10 +140,11 @@ export function DataExplorer({ surveyId }: { surveyId: string }) {
   });
   const subset = !allCourses || !allVersions || !allFields;
   const params = {
-    courses: allCourses ? '' : [...courses].join(','),
-    versions: allVersions ? '' : [...versions].join(','),
-    fields: allFields ? '' : chosenFields.map((e) => e.key).join(','),
+    courses: allCourses ? undefined : [...courses].join(','),
+    versions: allVersions ? undefined : [...versions].join(','),
+    fields: allFields ? undefined : chosenFields.map((e) => e.key).join(','),
   };
+  const nothing = rows.length === 0 || chosenFields.length === 0;
 
   const toggle = <T,>(set: Set<T> | null, all: T[], value: T): Set<T> | null => {
     const next = new Set(set ?? all);
@@ -170,10 +197,7 @@ export function DataExplorer({ surveyId }: { surveyId: string }) {
   };
 
   return (
-    <section className="admin-section data-explorer">
-      <h2 className="section-title">
-        <span>Datenbank</span>
-      </h2>
+    <>
       <p className="admin-note">
         Alle Einzelantworten dieser Umfrage einschließlich Freitexten, Version und Kurs. Die Reihenfolge der Zeilen ist zufällig und sagt
         nichts über den Zeitpunkt der Abgabe. Datum und Uhrzeit werden nicht gespeichert.
@@ -247,18 +271,18 @@ export function DataExplorer({ surveyId }: { surveyId: string }) {
       </div>
 
       <div className="admin-actions">
-        <a className="btn btn-primary admin-link" href={dataUrl(surveyId, { ...params, format: 'csv', sep })} download>
+        <DownloadLink disabled={nothing} primary href={dataUrl(surveyId, { ...params, format: 'csv', sep })}>
           CSV
-        </a>
-        <button className="btn btn-primary" disabled={busy || rows.length === 0} onClick={() => void downloadXlsx()}>
+        </DownloadLink>
+        <button className="btn btn-primary" disabled={busy || nothing} onClick={() => void downloadXlsx()}>
           Excel (XLSX)
         </button>
-        <a className="btn btn-primary admin-link" href={dataUrl(surveyId, { ...params, format: 'rds' })} download>
+        <DownloadLink disabled={nothing} primary href={dataUrl(surveyId, { ...params, format: 'rds' })}>
           R (RDS)
-        </a>
-        <a className="btn btn-secondary admin-link" href={dataUrl(surveyId, { ...params, format: 'json-file' })} download>
+        </DownloadLink>
+        <DownloadLink disabled={nothing} href={dataUrl(surveyId, { ...params, format: 'json-file' })}>
           JSON
-        </a>
+        </DownloadLink>
         <a className="btn btn-secondary admin-link" href={dataUrl(surveyId, { ...params, format: 'codebook.csv', sep })} download>
           Codebuch (CSV)
         </a>
@@ -344,7 +368,7 @@ export function DataExplorer({ surveyId }: { surveyId: string }) {
       ) : (
         chosenFields.map((e) => <FieldChart key={e.key} entry={e} rows={rows} byCourse={byCourse} />)
       )}
-    </section>
+    </>
   );
 }
 
@@ -446,6 +470,23 @@ function FieldChart({ entry, rows, byCourse }: { entry: CodebookEntry; rows: Dat
         ))}
       </div>
     </div>
+  );
+}
+
+/** A download link, or a disabled button when the selection is empty. */
+function DownloadLink({ href, disabled, primary, children }: { href: string; disabled: boolean; primary?: boolean; children: React.ReactNode }) {
+  const cls = `btn ${primary ? 'btn-primary' : 'btn-secondary'}`;
+  if (disabled) {
+    return (
+      <button className={cls} disabled title="Keine Antworten oder keine Felder ausgewählt">
+        {children}
+      </button>
+    );
+  }
+  return (
+    <a className={`${cls} admin-link`} href={href} download>
+      {children}
+    </a>
   );
 }
 

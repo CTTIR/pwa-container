@@ -78,7 +78,11 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const [code, setCodeValue] = useState(linkCode ?? '');
   const [course, setCourseValue] = useState<string | null>(null);
   const [codeState, setCodeState] = useState<CodeState>('idle');
-  const [noticeConfirmed, setNoticeConfirmed] = useState(false);
+  const [noticeConfirmed, setNoticeConfirmedState] = useState(false);
+  const setNoticeConfirmed = (v: boolean) => {
+    live.current.noticeConfirmed = v;
+    setNoticeConfirmedState(v);
+  };
   /** Unsent answers are kept on the device although the survey cannot take them now. */
   const [keptAnswers, setKeptAnswers] = useState(false);
 
@@ -90,6 +94,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     step: INTRO,
     code: linkCode ?? '',
     course: null as string | null,
+    noticeConfirmed: false,
   });
   /** The pending submission, also kept here so retries work when localStorage is blocked. */
   const outboxRef = useRef<Outbox | null>(null);
@@ -131,9 +136,14 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   /** Writes the current answers to the draft of `version` (default: the loaded definition). */
   const saveDraft = (version = live.current.def?.version, expiresAt?: number) => {
     if (version === undefined) return;
-    const { answers: a, step: s, code: c, course: k } = live.current;
+    const { answers: a, step: s, code: c, course: k, noticeConfirmed: n } = live.current;
     const normalized = normalizeCode(c);
-    storage.saveDraft(surveyId, version, { answers: a, step: s, code: normalized ? formatCode(normalized) : undefined, course: k }, expiresAt);
+    storage.saveDraft(
+      surveyId,
+      version,
+      { answers: a, step: s, code: normalized ? formatCode(normalized) : undefined, course: k, noticeConfirmed: n || undefined },
+      expiresAt,
+    );
   };
 
   /** Forgets this tab's pending submission (other people's on this device stay). */
@@ -173,6 +183,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     setCode(scanned ?? '');
     setCourse(null);
     setCodeState('idle');
+    // The next person on this device confirms the notice for themselves.
+    setNoticeConfirmed(false);
     setStep(INTRO);
     setNotice(null);
     setMissing(new Set());
@@ -317,7 +329,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
           showUnavailable(data.status);
           return;
         }
-        setStep(REVIEW);
+        // A new version may have added a notice: then it must be confirmed first.
+        setStep(data?.definition.notice && !live.current.noticeConfirmed ? INTRO : REVIEW);
         setMissing(new Set());
         setNotice('changed');
         focusHeading.current = true;
@@ -362,7 +375,11 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       setCodeState(draft.course ? 'ok' : 'idle');
     }
     setAnswers(draft.answers ?? {});
-    setStep(Math.min(Math.max(INTRO, draft.step ?? INTRO), d.sections.length));
+    // A draft without a confirmed notice (e.g. started before the notice existed) starts over at
+    // the start page; the answers stay.
+    const confirmed = draft.noticeConfirmed === true;
+    setNoticeConfirmed(confirmed);
+    setStep(d.notice && !confirmed ? INTRO : Math.min(Math.max(INTRO, draft.step ?? INTRO), d.sections.length));
     if (changed) setNotice('changed');
   };
 
@@ -571,13 +588,18 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       setNotice('code');
       return;
     }
+    if (d.notice && !live.current.noticeConfirmed) {
+      focusHeading.current = true;
+      setStep(INTRO);
+      return;
+    }
     const outbox: Outbox = {
       submissionId: newSubmissionId(),
       surveyVersion: d.version,
       answers: given,
       code: normalized || undefined,
-      // Answers can only be given after the start page, whose button needs the notice confirmed.
-      noticeConfirmed: d.notice ? true : undefined,
+      // The checkbox state itself; the server refuses answers to a notice that was not confirmed.
+      noticeConfirmed: d.notice ? live.current.noticeConfirmed : undefined,
       course: live.current.course,
       // Answers never stay longer than the draft was allowed to (at most 7 days from its start).
       expiresAt: storage.loadDraft(surveyId, d.version)?.expiresAt,

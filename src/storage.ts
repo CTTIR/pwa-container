@@ -69,6 +69,8 @@ export interface Draft {
   step: number;
   code?: string;
   course?: string | null;
+  /** The participant ticked the notice checkbox on the start page. */
+  noticeConfirmed?: boolean;
   /** Epoch milliseconds after which the draft is discarded. Never leaves the device. */
   expiresAt?: number;
 }

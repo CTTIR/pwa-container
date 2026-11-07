@@ -249,7 +249,13 @@ export class Store {
     const legacyCodes = path.join(dataDir, 'codes.sqlite');
     const hasRecordsTable = !!this.main.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'records'").get();
     if (!fs.existsSync(legacyAnswers) && !fs.existsSync(legacyCodes) && !hasRecordsTable) return;
-    const ids = (db: DatabaseSync, sql: string) => (db.prepare(sql).all() as { id: string }[]).map((r) => r.id).filter((id) => APP_DB_ID.test(id));
+    const ids = (db: DatabaseSync, sql: string) => {
+      const list = (db.prepare(sql).all() as { id: string }[]).map((r) => r.id);
+      const bad = list.filter((id) => !APP_DB_ID.test(id));
+      // Never drop rows: stop (the shared files stay untouched) if an id cannot become a directory.
+      if (bad.length) throw new Error(`migration stopped: app ids without a valid database name: ${bad.map((b) => JSON.stringify(b)).join(', ')}`);
+      return list;
+    };
     if (fs.existsSync(legacyAnswers)) {
       const old = open(legacyAnswers);
       try {
@@ -298,12 +304,29 @@ export class Store {
         this.compact(id, 'answers', true);
       }
     }
-    // Everything is copied: remove the shared copies (secure_delete overwrote deleted pages).
+    // Everything is copied: overwrite the shared files with zeros, then remove them, so their
+    // content does not stay readable in free blocks of the volume.
     for (const f of [legacyAnswers, legacyCodes]) {
-      for (const suffix of ['', '-journal']) fs.rmSync(f + suffix, { force: true });
+      for (const suffix of ['', '-journal']) {
+        const file = f + suffix;
+        try {
+          const size = fs.statSync(file).size;
+          const fd = fs.openSync(file, 'r+');
+          try {
+            fs.writeSync(fd, Buffer.alloc(size), 0, size, 0);
+            fs.fsyncSync(fd);
+          } finally {
+            fs.closeSync(fd);
+          }
+        } catch {
+          /* missing: nothing to overwrite */
+        }
+        fs.rmSync(file, { force: true });
+      }
     }
     if (hasRecordsTable) {
-      this.main.exec('DROP TABLE records');
+      // IF EXISTS: a second process (CLI) may have finished the same migration meanwhile.
+      this.main.exec('DROP TABLE IF EXISTS records');
       this.main.exec('VACUUM');
     }
     this.touchFixed();
@@ -734,6 +757,12 @@ export class Store {
     return rows
       .filter((r) => (!courses || courses.has(r.c)) && (!versions || versions.has(r.v)))
       .map((r) => ({ surveyVersion: r.v, courseId: r.c, course: r.c ? (labels.get(r.c) ?? null) : null, answers: JSON.parse(r.a) as Answers }));
+  }
+
+  /** Whether an app already has its own database (without creating one). */
+  hasDatabase(appId: string): boolean {
+    if (this.dbs.has(appId)) return true;
+    return !!this.dataDir && APP_DB_ID.test(appId) && fs.existsSync(path.join(this.dataDir, 'db', appId));
   }
 
   /** Survey versions that are registered for an app. */

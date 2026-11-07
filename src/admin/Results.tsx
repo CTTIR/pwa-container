@@ -132,8 +132,6 @@ export function Results({ surveyId }: { surveyId: string }) {
   const released = courses.filter((c) => c.released);
   const openCourses = courses.filter((c) => !c.closed).length;
   const smallCourses = courses.filter((c) => c.closed && !c.released && (c.responses ?? 0) < k).length;
-  // Single rows per response are only for the global administration; organisers get summaries.
-  const isGlobal = data.role === 'global';
   const shown = data.released && data.responses > 0;
   const canExport = shown && !busy;
   const suffix = course ? `_${course}` : '';
@@ -236,29 +234,25 @@ export function Results({ surveyId }: { surveyId: string }) {
       )}
 
       <div className="admin-actions">
-        {isGlobal ? (
-          <button className="btn btn-primary" disabled={!canExport} onClick={() => void withResponses((r) => downloadXlsx(r, summary, suffix))}>
-            Excel (Bewertungen + Freitexte)
-          </button>
+        <button className="btn btn-primary" disabled={!canExport} onClick={() => void withResponses((r) => downloadXlsx(r, summary, suffix))}>
+          Excel (Bewertungen + Freitexte)
+        </button>
+        <button
+          className="btn btn-secondary"
+          disabled={!canExport}
+          onClick={() => void downloadSummaryXlsx(definition.id + suffix, fields, summary).catch((err: Error) => setError(err.message))}
+        >
+          Excel (Zusammenfassung)
+        </button>
+        {canExport ? (
+          <a className="btn btn-secondary admin-link" href={api(surveyId, 'export.csv', course)} download>
+            CSV Bewertungen
+          </a>
         ) : (
-          <button
-            className="btn btn-primary"
-            disabled={!canExport}
-            onClick={() => void downloadSummaryXlsx(definition.id + suffix, fields, summary).catch((err: Error) => setError(err.message))}
-          >
-            Excel (Zusammenfassung + Freitexte)
+          <button className="btn btn-secondary" disabled>
+            CSV Bewertungen
           </button>
         )}
-        {isGlobal &&
-          (canExport ? (
-            <a className="btn btn-secondary admin-link" href={api(surveyId, 'export.csv', course)} download>
-              CSV Bewertungen
-            </a>
-          ) : (
-            <button className="btn btn-secondary" disabled>
-              CSV Bewertungen
-            </button>
-          ))}
         {textFields.length > 0 &&
           (canExport ? (
             <a className="btn btn-secondary admin-link" href={api(surveyId, 'texts.csv', course)} download>
@@ -269,11 +263,9 @@ export function Results({ surveyId }: { surveyId: string }) {
               CSV Freitexte
             </button>
           ))}
-        {isGlobal && (
-          <button className="btn btn-secondary" disabled={!canExport} onClick={() => void withResponses((r) => downloadJson(r, suffix))}>
-            JSON
-          </button>
-        )}
+        <button className="btn btn-secondary" disabled={!canExport} onClick={() => void withResponses((r) => downloadJson(r, suffix))}>
+          JSON
+        </button>
         <button className="btn btn-link" disabled={busy} onClick={() => void load()}>
           Aktualisieren
         </button>

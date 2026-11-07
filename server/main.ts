@@ -6,6 +6,9 @@ import { Store } from './db.ts';
 import { AppRegistry } from './registry.ts';
 import { createTraefikWriter } from './traefik.ts';
 
+// Files this process creates (databases, routes) are not readable for others on the host.
+process.umask(0o027);
+
 // Request logging is deliberately absent: the server never writes client addresses or
 // request details anywhere. Only startup messages and internal errors are printed.
 const log = (msg: string) => console.log(`[pwa-container] ${msg}`);

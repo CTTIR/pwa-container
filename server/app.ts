@@ -675,6 +675,9 @@ export function createApp(deps: AppDeps) {
     return null;
   }
 
+  /** Formats of the data endpoint; anything else is refused before any data is read. */
+  const DATA_FORMATS = new Set(['json', 'json-file', 'csv', 'codebook.csv', 'rds']);
+
   async function handleAdminApi(req: IncomingMessage, res: ServerResponse, parts: string[], method: string): Promise<void> {
     // parts: ['admin', 'api', ...]
     const area = parts[2];
@@ -696,16 +699,19 @@ export function createApp(deps: AppDeps) {
         // Full data of this one survey (its own database only): single responses with free
         // texts, version and course; filtered by course, version and field; JSON, CSV or RDS.
         if (method !== 'GET') return sendJson(res, 405, { error: 'method_not_allowed' });
+        const format = url.searchParams.get('format') ?? 'json';
+        if (!DATA_FORMATS.has(format)) return sendJson(res, 400, { error: 'format must be json, json-file, csv, codebook.csv or rds' });
         const filter = parseFilter(url.searchParams);
         if (typeof filter === 'string') return sendJson(res, 400, { error: filter });
         const known = new Set(store.courseLabels(def.id).map((c) => c.id));
         if (filter.courses?.some((c) => c !== null && !known.has(c))) return sendJson(res, 404, { error: 'unknown course' });
+        // Built synchronously: concurrent requests are handled one after another.
         const raw = store.rawResponses(def.id, { courses: filter.courses, versions: filter.versions });
         const data = buildDataset(def, raw, filter);
         const subset = filter.courses || filter.versions || filter.fields ? '_teilmenge' : '';
-        const format = url.searchParams.get('format') ?? 'json';
         const sep = url.searchParams.get('sep') === 'comma' ? ',' : ';';
-        log(`data of ${def.id} read by ${role} administration (${format}, ${data.rows.length} rows)`);
+        // No counts in the log: timestamped counts would tell when answers came in.
+        if (format !== 'json') log(`data export of ${def.id} by the ${role} administration`);
         switch (format) {
           case 'json':
             return sendJson(res, 200, {
@@ -715,15 +721,13 @@ export function createApp(deps: AppDeps) {
               role,
             });
           case 'json-file':
-            return download(res, `${def.id}_daten${subset}.json`, 'application/json; charset=utf-8', JSON.stringify(data, null, 2));
+            return download(res, `${def.id}_daten${subset}.json`, 'application/json; charset=utf-8', JSON.stringify(data));
           case 'csv':
             return download(res, `${def.id}_daten${subset}.csv`, 'text/csv; charset=utf-8', datasetCsv(data, sep));
           case 'codebook.csv':
             return download(res, `${def.id}_codebuch.csv`, 'text/csv; charset=utf-8', codebookCsv(data, sep));
-          case 'rds':
-            return download(res, `${def.id}_daten${subset}.rds`, 'application/octet-stream', datasetRds(data));
           default:
-            return sendJson(res, 400, { error: 'format must be json, json-file, csv, codebook.csv or rds' });
+            return download(res, `${def.id}_daten${subset}.rds`, 'application/octet-stream', datasetRds(data));
         }
       }
 

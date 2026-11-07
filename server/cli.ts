@@ -4,6 +4,9 @@ import { loadConfig } from './config.ts';
 import { Store } from './db.ts';
 import { validateDefinition } from '../shared/schema.ts';
 
+// Files this process creates (databases, routes) are not readable for others on the host.
+process.umask(0o027);
+
 // Maintenance commands, run inside the container:
 //   node server/cli.ts new-password             (prints a random password and its hash)
 //   node server/cli.ts hash-password            (reads the password from stdin)
@@ -41,6 +44,7 @@ switch (command) {
   case 'count': {
     if (!arg) throw new Error('usage: count <surveyId>');
     const store = new Store(loadConfig().dataDir);
+    if (!store.hasDatabase(arg)) throw new Error(`no database for ${arg}`);
     console.log(store.count(arg));
     store.close();
     break;
@@ -48,6 +52,7 @@ switch (command) {
   case 'purge': {
     if (!arg || flag !== '--yes') throw new Error('usage: purge <surveyId> --yes');
     const store = new Store(loadConfig().dataDir);
+    if (!store.hasDatabase(arg)) throw new Error(`no database for ${arg}`);
     console.log(`deleted ${store.purge(arg)} response(s) of ${arg}`);
     store.close();
     break;

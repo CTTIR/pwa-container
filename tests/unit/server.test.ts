@@ -633,6 +633,22 @@ describe('per-app databases and data access', () => {
     expect((await data('example-course-feedback', LEAD, 'format=exe')).status).toBe(400);
   });
 
+  it('treats an explicitly empty selection as nothing selected, not as everything', async () => {
+    const noCourses = (await (await data('example-course-feedback', LEAD, 'format=json&courses=')).json()) as { rows: unknown[] };
+    expect(noCourses.rows).toHaveLength(0);
+    const noFields = (await (await data('example-course-feedback', LEAD, 'format=json&fields=')).json()) as { codebook: unknown[]; columns: string[] };
+    expect(noFields.codebook).toHaveLength(0);
+    expect(noFields.columns).toEqual(['response', 'survey_version', 'course']);
+  });
+
+  it('neutralises spreadsheet formulas and leading control characters in CSV cells', async () => {
+    const { csvCell } = await import('../../server/data.ts');
+    expect(csvCell('\tcmd', ';')).toBe("'\tcmd");
+    expect(csvCell('=1+1', ';')).toBe("'=1+1");
+    expect(csvCell('-3', ';')).toBe('-3');
+    expect(csvCell('a;b', ';')).toBe('"a;b"');
+  });
+
   it('moves data of the former shared files into per-app databases', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-container-migrate-'));
     const answers = new DatabaseSync(path.join(dir, 'answers.sqlite'));
