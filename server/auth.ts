@@ -72,6 +72,9 @@ const BLOCKED_MAX_DELAY_MS = 5 * 60_000;
 const OVERFLOW_KEY = 'overflow';
 /** The shared bucket for sources beyond the table limit gets more room than a single source. */
 const OVERFLOW_MAX_CONCURRENT = 10;
+/** Password checks of cooling-down sources share this one narrow lane (plus a short queue). */
+const PENALTY_PARALLEL = 1;
+const PENALTY_QUEUE = 4;
 
 interface SourceState {
   failures: number[];
@@ -110,6 +113,8 @@ export class AdminAuth {
   private failures: number[] = [];
   private active = 0;
   private waiting: (() => void)[] = [];
+  private penaltyActive = 0;
+  private penaltyWaiting: (() => void)[] = [];
   /**
    * Sign-in attempts per source group. Kept only in memory, only as keyed hashes with a secret
    * that changes on every start, and only for the administration sign-in.
@@ -174,6 +179,21 @@ export class AdminAuth {
     return Object.assign(prune(state), { key });
   }
 
+  /** The narrow lane for checks of cooling-down sources. */
+  private async withPenaltySlot<T>(fn: () => Promise<T>): Promise<T | 'busy'> {
+    if (this.penaltyActive >= PENALTY_PARALLEL) {
+      if (this.penaltyWaiting.length >= PENALTY_QUEUE) return 'busy';
+      await new Promise<void>((resolve) => this.penaltyWaiting.push(resolve));
+    }
+    this.penaltyActive += 1;
+    try {
+      return await fn();
+    } finally {
+      this.penaltyActive -= 1;
+      this.penaltyWaiting.shift()?.();
+    }
+  }
+
   /** Limits concurrent password checks so a flood of attempts cannot exhaust the CPU. */
   private async withSlot<T>(fn: () => Promise<T>): Promise<T | 'busy'> {
     if (this.active >= MAX_PARALLEL_CHECKS) {
@@ -198,22 +218,24 @@ export class AdminAuth {
    *   are only held while the check runs, never during pauses;
    * - each failure is answered after a short, growing delay;
    * - after SOURCE_MAX_FAILURES failures the source cools down (10 s, doubling per further
-   *   failure, at most 5 min). During the cooldown it is refused ('blocked') without any check,
-   *   so guessing is limited to one attempt per cooldown. A source without failures is never
-   *   affected; correct credentials from a cooling-down source work again once it has passed.
+   *   failure, at most 5 min). Its checks then go through one narrow lane shared by all
+   *   cooling-down sources: correct credentials still work, wrong ones are answered 'blocked'
+   *   and extend the cooldown. The shared overflow bucket and requests without a known source
+   *   are never put into cooldown.
    * Long random passwords remain the main protection.
    */
   async authenticate(header: string | undefined, surveyId?: string, source = 'unknown'): Promise<AuthResult> {
     if (!header || !header.startsWith('Basic ')) return null;
     const now = this.clock();
     const state = this.sourceState(source, now);
-    if (state.blockedUntil > now) return 'blocked';
+    const canCool = state.key !== OVERFLOW_KEY && source !== 'unknown';
+    const cooling = canCool && state.blockedUntil > now;
     const limit = state.key === OVERFLOW_KEY ? OVERFLOW_MAX_CONCURRENT : SOURCE_MAX_CONCURRENT;
     if (state.inFlight >= limit) return 'busy';
     state.inFlight += 1;
     let result: AuthResult;
     try {
-      result = await this.check(header, surveyId);
+      result = cooling ? await this.withPenaltySlot(() => this.check(header, surveyId)) : await this.check(header, surveyId);
     } finally {
       state.inFlight -= 1;
     }
@@ -222,11 +244,11 @@ export class AdminAuth {
     state.failures.push(failedAt);
     this.failures.push(failedAt);
     const delay = this.delayFor(state, failedAt);
-    if (state.failures.length >= SOURCE_MAX_FAILURES) {
+    if (canCool && state.failures.length >= SOURCE_MAX_FAILURES) {
       state.blockedUntil = failedAt + delay;
       return 'blocked';
     }
-    await this.sleep(delay);
+    await this.sleep(Math.min(delay, MAX_DELAY_MS));
     return null;
   }
 

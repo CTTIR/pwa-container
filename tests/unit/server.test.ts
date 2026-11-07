@@ -196,23 +196,24 @@ describe('admin authentication', () => {
   const wrong = 'Basic ' + Buffer.from('admin:wrong password!!').toString('base64');
   const noPause = { sleep: async () => {} };
 
-  it('cools down a guessing source without affecting other sources', async () => {
+  it('cools down a guessing source, but correct credentials still work', async () => {
     let clock = 1_000_000;
     const auth = new AdminAuth(credFile, { ...noPause, now: () => clock });
     for (let i = 0; i < SOURCE_MAX_FAILURES - 1; i++) expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBeNull();
     expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked'); // limit reached: cooldown 10 s
-    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('blocked');
+    expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked'); // during cooldown: extended to 20 s
+    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('global');
     expect(await auth.authenticate(ADMIN, undefined, '198.51.100.2')).toBe('global');
     expect(await auth.authenticate(LEAD, 'example-course-feedback', '198.51.100.2')).toBe('survey');
     expect(await auth.authenticate(LEAD, 'another-survey', '198.51.100.2')).toBe('other');
-    clock += 10_001;
-    expect(await auth.authenticate(wrong, undefined, '203.0.113.7')).toBe('blocked'); // next cooldown: 20 s
-    clock += 15_000;
-    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('blocked');
-    clock += 5_001;
-    expect(await auth.authenticate(ADMIN, undefined, '203.0.113.7')).toBe('global');
     expect(auth.delayFor({ failures: Array(SOURCE_MAX_FAILURES + 2).fill(clock) })).toBe(40_000);
     expect(auth.delayFor({ failures: Array(SOURCE_MAX_FAILURES + 20).fill(clock) })).toBe(300_000);
+  });
+
+  it('never cools down requests without a known source', async () => {
+    const auth = new AdminAuth(credFile, noPause);
+    for (let i = 0; i < SOURCE_MAX_FAILURES + 3; i++) expect(await auth.authenticate(wrong)).toBeNull();
+    expect(await auth.authenticate(ADMIN)).toBe('global');
   });
 
   it('limits parallel checks per source but does not hold slots during pauses', async () => {
@@ -234,7 +235,7 @@ describe('admin authentication', () => {
     expect(sourceGroup('::ffff:192.0.2.5')).toBe('v4:192.0.2.5');
     const auth = new AdminAuth(credFile, noPause);
     for (let i = 0; i < SOURCE_MAX_FAILURES; i++) await auth.authenticate(wrong, undefined, `2001:db8:1:2::${i + 1}`);
-    expect(await auth.authenticate(ADMIN, undefined, '2001:db8:1:2:abcd::5')).toBe('blocked');
+    expect(await auth.authenticate(wrong, undefined, '2001:db8:1:2:abcd::5')).toBe('blocked');
     expect(await auth.authenticate(wrong, undefined, '2001:db8:1:3::1')).toBeNull();
   });
 

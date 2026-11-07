@@ -126,10 +126,13 @@ Brute-force protection works per client (IPv4 address or IPv6 /64):
   during pauses.
 - Failed attempts are answered after a short, growing delay.
 - After 10 failures within 15 minutes the client cools down: 10 seconds, doubling with every
-  further failure up to 5 minutes. During the cooldown its attempts are refused without a check,
-  even with correct credentials, so guessing is limited to one attempt per cooldown.
+  further failure up to 5 minutes.
+  - During the cooldown its password checks go through one narrow lane shared by all
+    cooling-down clients, so guessing stays slow.
+  - Correct credentials still work; wrong ones get HTTP 429 and extend the cooldown.
 - Clients without failures are never affected, and clients with recent failures are never
-  forgotten. If the table of clients is full, new clients share one common bucket.
+  forgotten. If the table of clients is full, new clients share one common bucket. That bucket is
+  never put into cooldown, and neither are requests without a known client address.
 
 Client addresses are needed for this, so the server keeps them for this one purpose only. They are
 held only in memory, as keyed hashes whose secret changes on every restart, and they are never

@@ -342,14 +342,28 @@ export class Store {
       .all(appId) as unknown as CollectionInfo[];
   }
 
-  /** Records one by one (for streaming exports), in random order. */
-  *iterateRecords(appId: string, collection?: string): Generator<StoredRecord> {
-    const stmt = this.db.prepare(
-      `SELECT collection AS c, received_on AS d, payload AS p FROM records
-       WHERE app_id = ? AND (? IS NULL OR collection = ?) ORDER BY id`,
-    );
-    for (const r of stmt.iterate(appId, collection ?? null, collection ?? null) as Iterable<{ c: string; d: string; p: string }>) {
-      yield { collection: r.c, receivedOn: r.d, data: JSON.parse(r.p) as unknown };
+  /**
+   * One page of records in random order (keyset paging on the random id), so exports never keep
+   * a database statement open between two writes.
+   */
+  recordPage(appId: string, collection: string | undefined, afterId: string, limit: number): { id: string; record: StoredRecord }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, collection AS c, received_on AS d, payload AS p FROM records
+         WHERE app_id = ? AND (? IS NULL OR collection = ?) AND id > ? ORDER BY id LIMIT ?`,
+      )
+      .all(appId, collection ?? null, collection ?? null, afterId, limit) as { id: string; c: string; d: string; p: string }[];
+    return rows.map((r) => ({ id: r.id, record: { collection: r.c, receivedOn: r.d, data: JSON.parse(r.p) as unknown } }));
+  }
+
+  /** All records page by page (synchronous; no statement stays open between pages). */
+  *recordPages(appId: string, collection?: string, pageSize = 500): Generator<StoredRecord[]> {
+    let after = '';
+    for (;;) {
+      const page = this.recordPage(appId, collection, after, pageSize);
+      if (page.length === 0) return;
+      yield page.map((p) => p.record);
+      after = page[page.length - 1].id;
     }
   }
 

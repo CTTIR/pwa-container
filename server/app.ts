@@ -307,11 +307,35 @@ export function createApp(deps: AppDeps) {
     sendJson(res, 201, { status: 'stored' });
   }
 
-  async function write(res: ServerResponse, chunk: string): Promise<void> {
-    if (!res.write(chunk)) await new Promise<void>((resolve) => res.once('drain', () => resolve()));
+  /** Writes a chunk; resolves false when the client went away, so the export stops. */
+  function write(res: ServerResponse, chunk: string): Promise<boolean> {
+    if (res.destroyed || res.writableEnded) return Promise.resolve(false);
+    if (res.write(chunk)) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const done = (ok: boolean) => {
+        clearTimeout(timer);
+        res.off('drain', onDrain);
+        res.off('close', onClose);
+        res.off('error', onClose);
+        resolve(ok);
+      };
+      const onDrain = () => done(true);
+      const onClose = () => done(false);
+      // A reader that stops reading for a minute is dropped.
+      const timer = setTimeout(() => {
+        res.destroy();
+        done(false);
+      }, 60_000);
+      res.once('drain', onDrain);
+      res.once('close', onClose);
+      res.once('error', onClose);
+    });
   }
 
-  /** Streams records as JSON or CSV without building the whole export in memory. */
+  /**
+   * Streams records as JSON or CSV. Rows are read page by page between writes, so no database
+   * statement stays open while waiting for a slow or vanished client.
+   */
   async function streamRecords(res: ServerResponse, appId: string, collection: string | undefined, format: 'json' | 'csv', filename: string): Promise<void> {
     res.writeHead(200, {
       'Content-Type': format === 'json' ? 'application/json; charset=utf-8' : 'text/csv; charset=utf-8',
@@ -319,22 +343,32 @@ export function createApp(deps: AppDeps) {
       'Cache-Control': 'no-store',
     });
     if (format === 'json') {
-      await write(res, `{"app":${JSON.stringify(appId)},"collection":${JSON.stringify(collection ?? null)},"records":[`);
+      if (!(await write(res, `{"app":${JSON.stringify(appId)},"collection":${JSON.stringify(collection ?? null)},"records":[`))) return;
       let first = true;
-      for (const r of store.iterateRecords(appId, collection)) {
-        await write(res, (first ? '\n' : ',\n') + JSON.stringify(r));
-        first = false;
+      for (const page of store.recordPages(appId, collection)) {
+        const chunk = page.map((r) => {
+          const text = (first ? '\n' : ',\n') + JSON.stringify(r);
+          first = false;
+          return text;
+        });
+        if (!(await write(res, chunk.join('')))) return;
       }
       res.end('\n]}\n');
       return;
     }
     // CSV: a first pass finds the columns, a second writes the rows.
-    const { keys, overflow } = collectColumns(store.iterateRecords(appId, collection));
-    await write(res, '\uFEFF' + headerFor(keys, overflow).map(csvField).join(',') + '\r\n');
+    const all = function* () {
+      for (const page of store.recordPages(appId, collection)) yield* page;
+    };
+    const { keys, overflow } = collectColumns(all());
+    if (!(await write(res, '\uFEFF' + headerFor(keys, overflow).map(csvField).join(',') + '\r\n'))) return;
     let i = 0;
-    for (const r of store.iterateRecords(appId, collection)) {
-      i += 1;
-      await write(res, rowFor(i, r, keys, overflow).map(csvField).join(',') + '\r\n');
+    for (const page of store.recordPages(appId, collection)) {
+      const lines = page.map((r) => {
+        i += 1;
+        return rowFor(i, r, keys, overflow).map(csvField).join(',') + '\r\n';
+      });
+      if (!(await write(res, lines.join('')))) return;
     }
     res.end();
   }
