@@ -132,9 +132,10 @@ export class AdminAuth {
   private failures: number[] = [];
   private active = 0;
   private waiting: (() => void)[] = [];
-  private penaltyActive = 0;
-  private penaltyWaiting: (() => void)[] = [];
-  private lastPenaltyCheck = 0;
+  /** Narrow lane for sources with failures or in cooldown. */
+  private penaltyLane: Lane;
+  /** Separate narrow lane for clean but unknown sources during a broad attack. */
+  private cleanLane: Lane;
   /**
    * Sources (as keyed hashes) that signed in successfully, with expiry. Only in memory; used so
    * that known administrators are not slowed down during a broad attack.
@@ -155,6 +156,8 @@ export class AdminAuth {
     this.maxSources = options.maxSources ?? 10_000;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.clock = options.now ?? Date.now;
+    this.penaltyLane = new Lane(this.clock, this.sleep);
+    this.cleanLane = new Lane(this.clock, this.sleep);
   }
 
   private read(): CredentialFile {
@@ -204,24 +207,6 @@ export class AdminAuth {
     return Object.assign(prune(state), { key });
   }
 
-  /** The narrow lane for checks of cooling-down sources. */
-  private async withPenaltySlot<T>(fn: () => Promise<T>): Promise<T | 'busy'> {
-    if (this.penaltyActive >= PENALTY_PARALLEL) {
-      if (this.penaltyWaiting.length >= PENALTY_QUEUE) return 'busy';
-      await new Promise<void>((resolve) => this.penaltyWaiting.push(resolve));
-    }
-    this.penaltyActive += 1;
-    try {
-      const wait = this.lastPenaltyCheck + PENALTY_INTERVAL_MS - this.clock();
-      if (wait > 0) await this.sleep(wait);
-      this.lastPenaltyCheck = this.clock();
-      return await fn();
-    } finally {
-      this.penaltyActive -= 1;
-      this.penaltyWaiting.shift()?.();
-    }
-  }
-
   /** Limits concurrent password checks so a flood of attempts cannot exhaust the CPU. */
   private async withSlot<T>(fn: () => Promise<T>): Promise<T | 'busy'> {
     if (this.active >= MAX_PARALLEL_CHECKS) {
@@ -247,9 +232,10 @@ export class AdminAuth {
    *   growing delay after each failure;
    * - after SOURCE_MAX_FAILURES failures the source cools down (10 s, doubling per further
    *   failure, at most 5 min);
-   * - checks of cooling-down sources, and of every source that has not signed in successfully
-   *   before while more than GLOBAL_ALARM_FAILURES failures happened in the last five minutes,
-   *   go through one narrow lane: one check at a
+   * - checks of cooling-down sources, and during a broad attack (more than GLOBAL_ALARM_FAILURES
+   *   failures in five minutes) of every source with failures of its own, go through the penalty
+   *   lane; during an attack clean sources that never signed in successfully use a separate
+   *   clean lane. Each lane runs one check at a
    *   time and at most one per second overall. Guessing is therefore limited to about one
    *   attempt per second in total, while correct credentials are never refused outright (under
    *   load they may get 'busy' and have to try again).
@@ -259,26 +245,34 @@ export class AdminAuth {
     if (!header || !header.startsWith('Basic ')) return null;
     const now = this.clock();
     const state = this.sourceState(source, now);
-    // During a broad attack every source goes through the narrow lane, except sources that have
-    // signed in successfully before (an attacker cannot get that status for free).
+    // Sources with failures of their own (or in cooldown) use the penalty lane. During a broad
+    // attack, clean sources that have not signed in successfully before use a separate lane,
+    // so failing attackers cannot fill it; known administrators keep the normal path.
+    const attack = this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES;
     const trusted = (this.trusted.get(state.key) ?? 0) > now;
-    const slow = state.blockedUntil > now || (!trusted && this.recentGlobalFailures(now) > GLOBAL_ALARM_FAILURES);
+    const lane =
+      state.blockedUntil > now || (attack && state.failures.length > 0)
+        ? this.penaltyLane
+        : attack && !trusted
+          ? this.cleanLane
+          : null;
     const limit = state.key === OVERFLOW_KEY ? OVERFLOW_MAX_CONCURRENT : SOURCE_MAX_CONCURRENT;
     if (state.inFlight >= limit) return 'busy';
     state.inFlight += 1;
     let result: AuthResult;
     try {
-      result = slow ? await this.withPenaltySlot(() => this.check(header, surveyId)) : await this.check(header, surveyId);
+      result = lane ? await lane.run(() => this.check(header, surveyId)) : await this.check(header, surveyId);
     } finally {
       state.inFlight -= 1;
     }
-    if (result === 'global' || result === 'survey' || result === 'other') {
+    if (result === 'global' || result === 'survey') {
+      // Successful sign-in for this very page: remember the source as known-good. Existing
+      // entries are never evicted early; when the table is full, no new ones are added.
       if (state.key !== OVERFLOW_KEY) {
-        if (this.trusted.size >= MAX_TRUSTED_SOURCES) {
+        if (!this.trusted.has(state.key) && this.trusted.size >= MAX_TRUSTED_SOURCES) {
           for (const [k, until] of this.trusted) if (until <= now) this.trusted.delete(k);
-          if (this.trusted.size >= MAX_TRUSTED_SOURCES) this.trusted.delete(this.trusted.keys().next().value as string);
         }
-        this.trusted.set(state.key, now + TRUSTED_FOR_MS);
+        if (this.trusted.has(state.key) || this.trusted.size < MAX_TRUSTED_SOURCES) this.trusted.set(state.key, now + TRUSTED_FOR_MS);
       }
       return result;
     }
@@ -322,5 +316,36 @@ export class AdminAuth {
       }
       return best;
     });
+  }
+}
+
+/** A narrow check lane: one check at a time, at most one per PENALTY_INTERVAL_MS, short queue. */
+class Lane {
+  private active = 0;
+  private waiting: (() => void)[] = [];
+  private last = 0;
+  private clock: () => number;
+  private sleep: (ms: number) => Promise<void>;
+
+  constructor(clock: () => number, sleep: (ms: number) => Promise<void>) {
+    this.clock = clock;
+    this.sleep = sleep;
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T | 'busy'> {
+    if (this.active >= PENALTY_PARALLEL) {
+      if (this.waiting.length >= PENALTY_QUEUE) return 'busy';
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    }
+    this.active += 1;
+    try {
+      const wait = this.last + PENALTY_INTERVAL_MS - this.clock();
+      if (wait > 0) await this.sleep(wait);
+      this.last = this.clock();
+      return await fn();
+    } finally {
+      this.active -= 1;
+      this.waiting.shift()?.();
+    }
   }
 }

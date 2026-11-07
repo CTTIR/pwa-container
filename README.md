@@ -126,11 +126,14 @@ Brute-force protection:
   password checks at a time, and a short, growing delay after each failure.
 - **Cooldown:** after 10 failures within 15 minutes the client cools down (10 seconds, doubling up
   to 5 minutes).
-- **Narrow lane:** password checks of cooling-down clients go through one shared lane. While more
-  than 200 failures happened in the last five minutes, so do those of every client that has not
-  signed in successfully before. Successful clients are remembered in memory only, as keyed
-  hashes, for 30 days or until a restart. It runs one check at a
-  time and at most one per second in total.
+- **Narrow lanes:**
+  - Password checks of cooling-down clients go through a shared penalty lane.
+  - While more than 200 failures happened in the last five minutes, the penalty lane also takes
+    every client with failures of its own. Clean clients that never signed in successfully use a
+    separate lane, so failing attackers cannot fill it.
+  - Clients that signed in successfully for that page keep the normal path. They are remembered
+    in memory only, as keyed hashes, for 30 days or until a restart. It runs one check at a
+  Each lane runs one check at a time and at most one per second.
   - Guessing is therefore limited to about one attempt per second overall.
   - Correct credentials are never refused outright; under load the answer may be "try again".
 - **Passwords:** at least 16 characters. `node server/cli.ts new-password` prints a random
