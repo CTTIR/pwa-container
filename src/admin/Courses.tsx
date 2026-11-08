@@ -491,7 +491,35 @@ function CodeList({
   );
 }
 
-/** Printable A4 sheet: one cut-out slip per code with its own QR link, the survey and the event. */
+/** How the slips are laid out on the printed pages. */
+export type SlipLayout = 'compact' | 'single';
+
+/** Slips per printed page: a 2 × 5 grid of cut-out slips, or one large slip per page. */
+export const SLIPS_PER_PAGE: Record<SlipLayout, number> = { compact: 10, single: 1 };
+
+const LAYOUT_KEY = 'pwa-admin-slip-layout';
+
+function storedLayout(): SlipLayout {
+  try {
+    const v = window.localStorage.getItem(LAYOUT_KEY);
+    return v === 'single' || v === 'compact' ? v : 'compact';
+  } catch {
+    return 'compact';
+  }
+}
+
+/** Splits the codes into printed pages of `perPage` slips each. */
+export function slipPages<T>(codes: readonly T[], perPage: number): T[][] {
+  const pages: T[][] = [];
+  for (let i = 0; i < codes.length; i += perPage) pages.push(codes.slice(i, i + perPage));
+  return pages;
+}
+
+/**
+ * Printable A4 sheet: one cut-out slip per code with its own QR link, the survey and the event.
+ * Every printed page is its own fixed-size block that is smaller than the printable area of A4 (and of
+ * US Letter), so a page break never falls through a slip, whatever the browser does with grids.
+ */
 export function PrintSheet({
   sheet,
   surveyTitle,
@@ -505,6 +533,15 @@ export function PrintSheet({
 }) {
   const [qrs, setQrs] = useState<Record<string, string> | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [layout, setLayoutState] = useState<SlipLayout>(storedLayout);
+  const setLayout = (next: SlipLayout) => {
+    setLayoutState(next);
+    try {
+      window.localStorage.setItem(LAYOUT_KEY, next);
+    } catch {
+      // Remembering the choice is a convenience only.
+    }
+  };
   const base = useMemo(() => {
     try {
       return new URL(surveyUrl, window.location.origin);
@@ -514,13 +551,23 @@ export function PrintSheet({
   }, [surveyUrl]);
   const linkFor = useCallback((code: string) => `${base.origin}${base.pathname}#code=${code}`, [base]);
   const event = eventLine(sheet.course);
+  const eventDate = sheet.course.eventDate ? formatEventDate(sheet.course.eventDate, sheet.course.eventDateEnd) : '';
+  const pages = useMemo(() => slipPages(sheet.codes, SLIPS_PER_PAGE[layout]), [sheet.codes, layout]);
 
   useEffect(() => {
     let cancelled = false;
     setQrs(null);
     setQrError(null);
+    // SVG, so the code stays sharp at every printed size.
     Promise.all(
-      sheet.codes.map(async (c) => [c, await QRCode.toDataURL(linkFor(c), { errorCorrectionLevel: 'M', margin: 1, width: 360 })] as const),
+      sheet.codes.map(
+        async (c) =>
+          [
+            c,
+            'data:image/svg+xml;charset=utf-8,' +
+              encodeURIComponent(await QRCode.toString(linkFor(c), { type: 'svg', errorCorrectionLevel: 'M', margin: 1 })),
+          ] as const,
+      ),
     ).then(
       (pairs) => {
         if (!cancelled) setQrs(Object.fromEntries(pairs));
@@ -552,6 +599,20 @@ export function PrintSheet({
           <strong>{sheet.codes.length} Codes</strong> für „{event}“: drucken oder als PDF speichern, dann zuschneiden und zufällig
           austeilen; nicht notieren, wer welchen Zettel bekommt. Die Codes bleiben im Admin-Bereich abrufbar.
         </div>
+        <fieldset className="print-layout">
+          <legend>Format</legend>
+          <label className="data-check">
+            <input type="radio" name="slip-layout" checked={layout === 'compact'} onChange={() => setLayout('compact')} />
+            Platzsparend: {SLIPS_PER_PAGE.compact} Zettel pro Seite zum Zuschneiden
+          </label>
+          <label className="data-check">
+            <input type="radio" name="slip-layout" checked={layout === 'single'} onChange={() => setLayout('single')} />
+            Ein großer QR-Code pro Seite
+          </label>
+          <span className="print-layout-pages">
+            {pages.length} {pages.length === 1 ? 'Seite' : 'Seiten'} A4 · im Druckdialog Skalierung 100 % bzw. „Standard“ lassen
+          </span>
+        </fieldset>
         <div className="admin-actions">
           <button className="btn btn-primary" disabled={!qrs} onClick={() => window.print()}>
             Drucken / PDF
@@ -571,19 +632,26 @@ export function PrintSheet({
       )}
       {!qrs && !qrError && <p className="status-text no-print">QR-Codes werden erzeugt …</p>}
       {qrs && (
-        <div className="slips">
-          {sheet.codes.map((c) => (
-            <div key={c} className="slip">
-              <div className="slip-title">{surveyTitle}</div>
-              <div className="slip-course">{event}</div>
-              <img src={qrs[c]} alt={`QR-Code für Code ${c}`} className="slip-qr" />
-              <div className="slip-help">
-                QR-Code scannen – oder {base.host}
-                {base.pathname === '/' ? '' : base.pathname} öffnen und Code eingeben:
-              </div>
-              <div className="slip-code">{c}</div>
-              <div className="slip-note">Einmal gültig · anonym</div>
-            </div>
+        <div className={`print-pages slips-${layout}`}>
+          {pages.map((codes, i) => (
+            <section key={`${layout}-${i}`} className="print-page" aria-label={`Seite ${i + 1} von ${pages.length}`}>
+              {codes.map((c) => (
+                <div key={c} className="slip">
+                  <img src={qrs[c]} alt={`QR-Code für Code ${c}`} className="slip-qr" />
+                  <div className="slip-text">
+                    <div className="slip-title">{surveyTitle}</div>
+                    <div className="slip-course">{sheet.course.label}</div>
+                    {eventDate && <div className="slip-date">{eventDate}</div>}
+                    <div className="slip-help">
+                      QR-Code scannen – oder {base.host}
+                      {base.pathname === '/' ? '' : base.pathname} öffnen und Code eingeben:
+                    </div>
+                    <div className="slip-code">{c}</div>
+                    <div className="slip-note">Einmal gültig · anonym</div>
+                  </div>
+                </div>
+              ))}
+            </section>
           ))}
         </div>
       )}

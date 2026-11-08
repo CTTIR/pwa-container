@@ -8,7 +8,9 @@ subdomain:
   answers stay on the device until the server confirms them.
 - **Single-use access codes per course** (optional per survey):
   - Organisers create a course, generate codes and print them as slips. Each slip has its own QR
-    code that already contains the code.
+    code that already contains the code. The print layout is either ten slips per A4 page to cut
+    out or one large code per page; every printed page is a fixed-size block, so a page break never
+    cuts through a slip.
   - A response needs an unused code and is linked only to the course, never to the code.
   - Results and exports can be filtered by course.
   - Courses and codes are stored in the database. In the administration codes can be listed,
