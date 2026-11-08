@@ -11,6 +11,8 @@ export interface LoadedSurvey {
   def: SurveyDefinition;
   /** Serialized public definition, sent unchanged to browsers. */
   json: string;
+  /** Folder of survey.json; may also hold the printable questionnaire `paper.pdf`. */
+  dir: string;
 }
 
 export interface AppEntry {
@@ -243,7 +245,7 @@ export class AppRegistry {
       return;
     }
     const row = this.store.getApp(def.id);
-    this.apps.set(def.id, this.entry(def.id, 'survey', source, def.title, row, { survey: { def, json: loaded.json } }));
+    this.apps.set(def.id, this.entry(def.id, 'survey', source, def.title, row, { survey: { def, json: loaded.json, dir: path.dirname(file) } }));
     this.log(`loaded survey ${def.id} v${def.version} (${source})`);
   }
 

@@ -517,6 +517,21 @@ export function createApp(deps: AppDeps) {
     res.end(body);
   }
 
+  /** Largest printable questionnaire (`paper.pdf` next to survey.json) the admin area hands out. */
+  const MAX_PAPER_BYTES = 20 * 1024 * 1024;
+
+  /** Path of the survey's printable questionnaire, or null when it has none. */
+  function paperFile(app: AppEntry): string | null {
+    if (!app.survey) return null;
+    const file = path.join(app.survey.dir, 'paper.pdf');
+    try {
+      const st = fs.statSync(file);
+      return st.isFile() && st.size > 0 && st.size <= MAX_PAPER_BYTES ? file : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Basic authentication for /admin. Resolves to the granted role, or null after answering. */
   async function authorize(req: IncomingMessage, res: ServerResponse, surveyId?: string): Promise<'global' | 'survey' | null> {
     const role = await auth.authenticate(req.headers.authorization, surveyId, signInSource(req));
@@ -729,6 +744,21 @@ export function createApp(deps: AppDeps) {
         return await handlePasswordChange(req, res, method, role === 'global' ? 'global' : def.id);
       }
 
+      if (parts[4] === 'paper.pdf' && parts.length === 5) {
+        // Printable questionnaire for pen-and-paper participation, shipped next to survey.json.
+        if (method !== 'GET' && method !== 'HEAD') return sendJson(res, 405, { error: 'method_not_allowed' });
+        const file = paperFile(app);
+        if (!file) return sendText(res, 404, 'Not found');
+        let pdf: Buffer;
+        try {
+          pdf = fs.readFileSync(file);
+        } catch {
+          return sendText(res, 404, 'Not found');
+        }
+        if (pdf.subarray(0, 5).toString('latin1') !== '%PDF-') return sendText(res, 404, 'Not found');
+        return download(res, `${def.id}_fragebogen_papier.pdf`, 'application/pdf', pdf);
+      }
+
       if (parts[4] === 'data' && parts.length === 5) {
         // Full data of this one survey (its own database only): single responses with free
         // texts, version and course; filtered by course, version and field; JSON, CSV or RDS.
@@ -905,6 +935,7 @@ export function createApp(deps: AppDeps) {
             responses: rows.length,
             course: courseParam ?? null,
             courses: view.courses,
+            paperPdf: paperFile(app) !== null,
             fields: fieldInfos(def),
             summary: summarize(def, rows),
           });

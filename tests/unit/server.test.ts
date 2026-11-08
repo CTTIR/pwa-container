@@ -147,6 +147,35 @@ describe('administration', () => {
     expect(dash.status).toBe(403);
   });
 
+  it('offers the printable questionnaire next to survey.json to the survey administration', async () => {
+    const file = path.join(surveysDir, 'example-course-feedback', 'paper.pdf');
+    const url = `${base}/admin/api/results/example-course-feedback/paper.pdf`;
+    const summary = async () =>
+      ((await (await fetch(`${base}/admin/api/results/example-course-feedback/summary`, { headers: { Authorization: LEAD } })).json()) as { paperPdf: boolean }).paperPdf;
+    try {
+      expect(await summary()).toBe(false);
+      expect((await fetch(url, { headers: { Authorization: LEAD } })).status).toBe(404);
+
+      const pdf = Buffer.from('%PDF-1.5\n% questionnaire\n%%EOF\n');
+      fs.writeFileSync(file, pdf);
+      expect(await summary()).toBe(true);
+      expect((await fetch(url)).status).toBe(401);
+      expect((await fetch(url, { headers: { Authorization: CODED_LEAD } })).status).toBe(403);
+      const res = await fetch(url, { headers: { Authorization: LEAD } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('application/pdf');
+      expect(res.headers.get('content-disposition')).toBe('attachment; filename="example-course-feedback_fragebogen_papier.pdf"');
+      expect(Buffer.from(await res.arrayBuffer()).equals(pdf)).toBe(true);
+      expect((await fetch(url, { method: 'POST', headers: { Authorization: ADMIN, ...WRITE } })).status).toBe(405);
+
+      // Anything that is not a PDF is not handed out.
+      fs.writeFileSync(file, '<html>not a pdf</html>');
+      expect((await fetch(url, { headers: { Authorization: ADMIN } })).status).toBe(404);
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  });
+
   it('releases results only for a closed survey with at least five responses, free texts separately', async () => {
     const summary = async () =>
       (await (await fetch(`${base}/admin/api/results/example-course-feedback/summary`, { headers: { Authorization: LEAD } })).json()) as {

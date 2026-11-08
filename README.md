@@ -116,6 +116,13 @@ Surveys come from two places:
 
 Validate a file with `node server/cli.ts validate path/to/survey.json`.
 
+**Paper version:** a survey folder may also hold `paper.pdf`, a printable questionnaire for people
+who cannot take part online. The administration page of the survey then offers it for download
+("Fragebogen als PDF (Papierversion)"), to the global and the survey's own credentials. Completed
+forms are typed into the survey afterwards; with access codes, one unused code of the course per
+form. The container only serves the file (up to 20 MB, must be a PDF); keeping it in step with
+`survey.json` is up to the deployment repository.
+
 ## Data records from web apps
 
 An uploaded app sends records to its own host. Collecting is off until it is switched on for that

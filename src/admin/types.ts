@@ -74,6 +74,8 @@ export interface SummaryResponse {
   definition: SurveyDefinition;
   /** Smallest group whose results are shown (k-anonymity), 5. */
   minGroup: number;
+  /** Whether a printable questionnaire (paper.pdf) is available for download. */
+  paperPdf?: boolean;
   /** Signed-in role: 'global' (administration) or 'survey' (course lead). */
   role?: 'global' | 'survey';
   /** Whether the data of this view are released. */

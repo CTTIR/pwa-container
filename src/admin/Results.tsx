@@ -198,6 +198,20 @@ export function Results({ surveyId }: { surveyId: string }) {
         </div>
       )}
 
+      {data.paperPdf && (
+        <div className="survey-status-row">
+          <a className="btn btn-secondary admin-link" href={api(surveyId, 'paper.pdf')} download>
+            Fragebogen als PDF (Papierversion)
+          </a>
+          <span className="survey-status-hint">
+            Zum Ausdrucken für alle, die nicht online teilnehmen können.{' '}
+            {withCodes
+              ? 'Die ausgefüllten Bögen eines Kurses danach in die Umfrage übertragen: je Bogen einen unbenutzten Code dieses Kurses verwenden und die Antworten eintippen.'
+              : 'Die ausgefüllten Bögen danach in die Umfrage übertragen: je Bogen die Antworten einmal eintippen.'}
+          </span>
+        </div>
+      )}
+
       {message && (
         <div className="panel panel-done" role="status">
           {message}
