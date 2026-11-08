@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { adminFetch } from './http.ts';
 import { saveBlob } from './exportXlsx.ts';
 import { eventLine, formatEventDate, isIsoDate } from './format.ts';
+import { SLIPS_PER_PAGE, slipPages, type SlipLayout } from '../../shared/slips.ts';
 import type { CodeInfo, CourseInfo, CreatedCodes } from './types.ts';
 
 /** The codes for one print run, with the event they belong to. */
@@ -491,12 +492,6 @@ function CodeList({
   );
 }
 
-/** How the slips are laid out on the printed pages. */
-export type SlipLayout = 'compact' | 'single';
-
-/** Slips per printed page: a 2 × 5 grid of cut-out slips, or one large slip per page. */
-export const SLIPS_PER_PAGE: Record<SlipLayout, number> = { compact: 10, single: 1 };
-
 const LAYOUT_KEY = 'pwa-admin-slip-layout';
 
 function storedLayout(): SlipLayout {
@@ -506,13 +501,6 @@ function storedLayout(): SlipLayout {
   } catch {
     return 'compact';
   }
-}
-
-/** Splits the codes into printed pages of `perPage` slips each. */
-export function slipPages<T>(codes: readonly T[], perPage: number): T[][] {
-  const pages: T[][] = [];
-  for (let i = 0; i < codes.length; i += perPage) pages.push(codes.slice(i, i + perPage));
-  return pages;
 }
 
 /**

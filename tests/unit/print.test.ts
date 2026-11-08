@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SLIPS_PER_PAGE, slipPages } from '../../src/admin/Courses.tsx';
+import { SLIPS_PER_PAGE, slipPages } from '../../shared/slips.ts';
 
 describe('code slips', () => {
   const codes = Array.from({ length: 23 }, (_, i) => `C${i}`);
