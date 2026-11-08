@@ -155,6 +155,15 @@ export function Results({ surveyId }: { surveyId: string }) {
 
   return (
     <Shell brand={definition.brand ? `${definition.brand} · Auswertung` : 'Auswertung'} title={survey.title} subtitle={survey.subtitle ?? undefined}>
+      {data.manualPdf && (
+        <div className="survey-status-row">
+          <a className="btn btn-secondary admin-link" href={api(surveyId, 'manual.pdf')} download>
+            Anleitung zur Verwaltung (PDF)
+          </a>
+          <span className="survey-status-hint">Kurzanleitung für diese Seite, zum Nachlesen oder Ausdrucken.</span>
+        </div>
+      )}
+
       <div className="admin-facts">
         <div>
           <span className="fact-num">{shown ? data.responses : '–'}</span> {course ? 'Antworten in diesem Kurs' : 'freigegebene Antworten'}

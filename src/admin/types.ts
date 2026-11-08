@@ -76,6 +76,8 @@ export interface SummaryResponse {
   minGroup: number;
   /** Whether a printable questionnaire (paper.pdf) is available for download. */
   paperPdf?: boolean;
+  /** Whether a manual for this administration page (manual.pdf) is available for download. */
+  manualPdf?: boolean;
   /** Signed-in role: 'global' (administration) or 'survey' (course lead). */
   role?: 'global' | 'survey';
   /** Whether the data of this view are released. */

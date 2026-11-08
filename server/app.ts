@@ -517,16 +517,28 @@ export function createApp(deps: AppDeps) {
     res.end(body);
   }
 
-  /** Largest printable questionnaire (`paper.pdf` next to survey.json) the admin area hands out. */
-  const MAX_PAPER_BYTES = 20 * 1024 * 1024;
+  /** Largest PDF next to survey.json (`paper.pdf`, `manual.pdf`) the admin area hands out. */
+  const MAX_SURVEY_PDF_BYTES = 20 * 1024 * 1024;
 
-  /** Path of the survey's printable questionnaire, or null when it has none. */
-  function paperFile(app: AppEntry): string | null {
+  /**
+   * PDFs a survey folder may ship next to survey.json, with the name of the download:
+   * the printable questionnaire and the manual for the survey's administration.
+   */
+  const SURVEY_PDFS = {
+    'paper.pdf': 'fragebogen_papier',
+    'manual.pdf': 'anleitung_verwaltung',
+  } as const;
+  type SurveyPdf = keyof typeof SURVEY_PDFS;
+  const isSurveyPdf = (name: string | undefined): name is SurveyPdf =>
+    name !== undefined && Object.hasOwn(SURVEY_PDFS, name);
+
+  /** Path of one of the survey's PDFs, or null when it has none. */
+  function surveyPdfFile(app: AppEntry, name: SurveyPdf): string | null {
     if (!app.survey) return null;
-    const file = path.join(app.survey.dir, 'paper.pdf');
+    const file = path.join(app.survey.dir, name);
     try {
       const st = fs.statSync(file);
-      return st.isFile() && st.size > 0 && st.size <= MAX_PAPER_BYTES ? file : null;
+      return st.isFile() && st.size > 0 && st.size <= MAX_SURVEY_PDF_BYTES ? file : null;
     } catch {
       return null;
     }
@@ -744,10 +756,12 @@ export function createApp(deps: AppDeps) {
         return await handlePasswordChange(req, res, method, role === 'global' ? 'global' : def.id);
       }
 
-      if (parts[4] === 'paper.pdf' && parts.length === 5) {
-        // Printable questionnaire for pen-and-paper participation, shipped next to survey.json.
+      if (isSurveyPdf(parts[4]) && parts.length === 5) {
+        // Printable questionnaire for pen-and-paper participation, or the manual for this
+        // administration page, shipped next to survey.json.
         if (method !== 'GET' && method !== 'HEAD') return sendJson(res, 405, { error: 'method_not_allowed' });
-        const file = paperFile(app);
+        const name = parts[4];
+        const file = surveyPdfFile(app, name);
         if (!file) return sendText(res, 404, 'Not found');
         let pdf: Buffer;
         try {
@@ -756,7 +770,7 @@ export function createApp(deps: AppDeps) {
           return sendText(res, 404, 'Not found');
         }
         if (pdf.subarray(0, 5).toString('latin1') !== '%PDF-') return sendText(res, 404, 'Not found');
-        return download(res, `${def.id}_fragebogen_papier.pdf`, 'application/pdf', pdf);
+        return download(res, `${def.id}_${SURVEY_PDFS[name]}.pdf`, 'application/pdf', pdf);
       }
 
       if (parts[4] === 'data' && parts.length === 5) {
@@ -935,7 +949,8 @@ export function createApp(deps: AppDeps) {
             responses: rows.length,
             course: courseParam ?? null,
             courses: view.courses,
-            paperPdf: paperFile(app) !== null,
+            paperPdf: surveyPdfFile(app, 'paper.pdf') !== null,
+            manualPdf: surveyPdfFile(app, 'manual.pdf') !== null,
             fields: fieldInfos(def),
             summary: summarize(def, rows),
           });

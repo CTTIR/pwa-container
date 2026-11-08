@@ -147,32 +147,45 @@ describe('administration', () => {
     expect(dash.status).toBe(403);
   });
 
-  it('offers the printable questionnaire next to survey.json to the survey administration', async () => {
-    const file = path.join(surveysDir, 'example-course-feedback', 'paper.pdf');
-    const url = `${base}/admin/api/results/example-course-feedback/paper.pdf`;
-    const summary = async () =>
-      ((await (await fetch(`${base}/admin/api/results/example-course-feedback/summary`, { headers: { Authorization: LEAD } })).json()) as { paperPdf: boolean }).paperPdf;
-    try {
-      expect(await summary()).toBe(false);
-      expect((await fetch(url, { headers: { Authorization: LEAD } })).status).toBe(404);
+  for (const [name, flag, download] of [
+    ['paper.pdf', 'paperPdf', 'fragebogen_papier'],
+    ['manual.pdf', 'manualPdf', 'anleitung_verwaltung'],
+  ] as const) {
+    it(`offers ${name} next to survey.json to the survey administration`, async () => {
+      const file = path.join(surveysDir, 'example-course-feedback', name);
+      const url = `${base}/admin/api/results/example-course-feedback/${name}`;
+      const summary = async () =>
+        ((await (await fetch(`${base}/admin/api/results/example-course-feedback/summary`, { headers: { Authorization: LEAD } })).json()) as Record<string, boolean>)[flag];
+      try {
+        expect(await summary()).toBe(false);
+        expect((await fetch(url, { headers: { Authorization: LEAD } })).status).toBe(404);
 
-      const pdf = Buffer.from('%PDF-1.5\n% questionnaire\n%%EOF\n');
-      fs.writeFileSync(file, pdf);
-      expect(await summary()).toBe(true);
-      expect((await fetch(url)).status).toBe(401);
-      expect((await fetch(url, { headers: { Authorization: CODED_LEAD } })).status).toBe(403);
-      const res = await fetch(url, { headers: { Authorization: LEAD } });
-      expect(res.status).toBe(200);
-      expect(res.headers.get('content-type')).toBe('application/pdf');
-      expect(res.headers.get('content-disposition')).toBe('attachment; filename="example-course-feedback_fragebogen_papier.pdf"');
-      expect(Buffer.from(await res.arrayBuffer()).equals(pdf)).toBe(true);
-      expect((await fetch(url, { method: 'POST', headers: { Authorization: ADMIN, ...WRITE } })).status).toBe(405);
+        const pdf = Buffer.from(`%PDF-1.5\n% ${name}\n%%EOF\n`);
+        fs.writeFileSync(file, pdf);
+        expect(await summary()).toBe(true);
+        expect((await fetch(url)).status).toBe(401);
+        expect((await fetch(url, { headers: { Authorization: CODED_LEAD } })).status).toBe(403);
+        const res = await fetch(url, { headers: { Authorization: LEAD } });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('application/pdf');
+        expect(res.headers.get('content-disposition')).toBe(`attachment; filename="example-course-feedback_${download}.pdf"`);
+        expect(Buffer.from(await res.arrayBuffer()).equals(pdf)).toBe(true);
+        expect((await fetch(url, { method: 'POST', headers: { Authorization: ADMIN, ...WRITE } })).status).toBe(405);
 
-      // Anything that is not a PDF is not handed out.
-      fs.writeFileSync(file, '<html>not a pdf</html>');
-      expect((await fetch(url, { headers: { Authorization: ADMIN } })).status).toBe(404);
-    } finally {
-      fs.rmSync(file, { force: true });
+        // Anything that is not a PDF is not handed out.
+        fs.writeFileSync(file, '<html>not a pdf</html>');
+        expect((await fetch(url, { headers: { Authorization: ADMIN } })).status).toBe(404);
+      } finally {
+        fs.rmSync(file, { force: true });
+      }
+    });
+  }
+
+  it('hands out no other file of the survey folder', async () => {
+    for (const name of ['survey.json', 'constructor', 'toString', 'other.pdf']) {
+      const res = await fetch(`${base}/admin/api/results/example-course-feedback/${name}`, { headers: { Authorization: ADMIN } });
+      expect(res.headers.get('content-type')).not.toBe('application/pdf');
+      expect(res.status).toBeGreaterThanOrEqual(400);
     }
   });
 

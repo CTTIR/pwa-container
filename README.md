@@ -125,6 +125,10 @@ forms are typed into the survey afterwards; with access codes, one unused code o
 form. The container only serves the file (up to 20 MB, must be a PDF); keeping it in step with
 `survey.json` is up to the deployment repository.
 
+**Manual:** a survey folder may likewise hold `manual.pdf`, a guide to the survey's administration
+page. It is offered first on that page ("Anleitung zur Verwaltung (PDF)"), to the same credentials
+and under the same limits as `paper.pdf`.
+
 ## Data records from web apps
 
 An uploaded app sends records to its own host. Collecting is off until it is switched on for that
