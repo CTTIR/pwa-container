@@ -66,6 +66,11 @@ export interface Strings {
   fieldRequired: string;
   privacyHeading: string;
   organiser: string;
+  lockedTitle: string;
+  lockedText: string;
+  lockedHint: string;
+  lockedContinue: string;
+  lockedOffline: string;
 }
 
 const de: Strings = {
@@ -114,6 +119,11 @@ const de: Strings = {
   loading: 'Wird geladen …',
   edit: 'Bearbeiten',
   sentOk: 'Vielen Dank! Die Antworten wurden gesendet.',
+  lockedTitle: 'Zugangscode',
+  lockedText: 'Bitte geben Sie Ihren Zugangscode ein.',
+  lockedHint: 'Format: XXXX-XXXX. Jeder Code gilt für eine Teilnahme.',
+  lockedContinue: 'Weiter',
+  lockedOffline: 'Keine Verbindung. Bitte Internetverbindung prüfen und erneut versuchen.',
   codeLabel: 'Zugangscode',
   codeHint: 'Den Code vom ausgeteilten Zettel eingeben (z. B. K7M2-Q9XW). Er gilt nur einmal und ordnet die Antworten dem Kurs zu, nicht einer Person.',
   codeOptionalHint: 'Falls vorhanden, den Code vom ausgeteilten Zettel eingeben.',
@@ -183,6 +193,11 @@ const en: Strings = {
   loading: 'Loading …',
   edit: 'Edit',
   sentOk: 'Thank you! Your answers have been sent.',
+  lockedTitle: 'Access code',
+  lockedText: 'Please enter your access code.',
+  lockedHint: 'Format: XXXX-XXXX. Each code is valid for one participation.',
+  lockedContinue: 'Continue',
+  lockedOffline: 'No connection. Please check your connection and try again.',
   codeLabel: 'Access code',
   codeHint: 'Enter the code from the slip you received (e.g. K7M2-Q9XW). It works once and links the answers to the course, not to a person.',
   codeOptionalHint: 'If you have one, enter the code from the slip you received.',

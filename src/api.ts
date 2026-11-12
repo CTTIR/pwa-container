@@ -34,8 +34,24 @@ export function isSurveyResponse(value: unknown): value is SurveyResponse {
   );
 }
 
+/** What a gated survey tells anyone with the link: only that it needs a code, and its state. */
+export interface GatedStub {
+  locale: string;
+  status: SurveyStatus;
+}
+
+function gatedStubOf(value: unknown): GatedStub | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const v = value as { gated?: unknown; locale?: unknown; status?: unknown };
+  if (v.gated !== true) return null;
+  if (v.status !== 'open' && v.status !== 'closed' && v.status !== 'not_yet_open') return null;
+  return { locale: typeof v.locale === 'string' ? v.locale : 'de', status: v.status };
+}
+
 export type LoadResult =
   | { kind: 'ok'; data: SurveyResponse }
+  /** The survey shows its definition only for a valid access code (see checkCode). */
+  | { kind: 'gated'; stub: GatedStub }
   | { kind: 'not_found' }
   | { kind: 'error' };
 
@@ -48,7 +64,9 @@ export async function loadSurvey(id: string): Promise<LoadResult> {
     if (res.status === 404) return { kind: 'not_found' };
     if (!res.ok) return { kind: 'error' };
     const body: unknown = await res.json();
-    return isSurveyResponse(body) ? { kind: 'ok', data: body } : { kind: 'error' };
+    if (isSurveyResponse(body)) return { kind: 'ok', data: body };
+    const stub = gatedStubOf(body);
+    return stub ? { kind: 'gated', stub } : { kind: 'error' };
   } catch {
     // Network failure, time limit or a non-JSON answer (e.g. a Wi-Fi sign-in page).
     return { kind: 'error' };
@@ -71,7 +89,8 @@ export type SubmitResult =
   | { kind: 'error' };
 
 export type CodeResult =
-  | { kind: 'ok'; course: string }
+  /** `data`: the definition of a gated survey, handed out with a valid code only. */
+  | { kind: 'ok'; course: string; data?: SurveyResponse }
   | { kind: 'unknown' | 'used' | 'course_closed' }
   /** The whole survey is closed (or not open yet): every code is expired. */
   | { kind: 'closed' | 'not_yet_open' }
@@ -103,8 +122,14 @@ export async function checkCode(id: string, code: string): Promise<CodeResult> {
   }
   try {
     if (res.ok) {
-      const body = (await res.json()) as { status?: string; course?: unknown };
-      if (body.status === 'ok' && typeof body.course === 'string') return { kind: 'ok', course: body.course };
+      const body = (await res.json()) as { status?: string; course?: unknown; definition?: unknown };
+      const course = body.course;
+      if (body.status === 'ok' && typeof course === 'string') {
+        if (body.definition === undefined) return { kind: 'ok', course };
+        // A gated survey's definition, with the state fields (status, opensAt, closesAt).
+        const data: unknown = { ...body, status: (body as { surveyStatus?: unknown }).surveyStatus };
+        if (isSurveyResponse(data)) return { kind: 'ok', course, data };
+      }
       return { kind: 'offline' };
     }
   } catch {
@@ -174,17 +199,25 @@ export async function submitAnswers(id: string, submissionId: string, surveyVers
   return { kind: 'error' };
 }
 
-export type PhotoUploadResult = { kind: 'stored' } | { kind: 'offline' } | { kind: 'closed' | 'not_yet_open' | 'full' } | { kind: 'invalid' };
+export type PhotoUploadResult =
+  | { kind: 'stored' }
+  | { kind: 'offline' }
+  | { kind: 'closed' | 'not_yet_open' | 'full' }
+  /** Gated surveys take photos only with a valid code. */
+  | { kind: 'code_unknown' | 'code_required' | 'course_closed' }
+  | { kind: 'invalid' };
 
 const PHOTO_TIMEOUT_MS = 90_000;
 
 /** Sends one photo before the answers that refer to it. Resends of a stored photo succeed. */
-export async function uploadPhoto(surveyId: string, photoId: string, blob: Blob): Promise<PhotoUploadResult> {
+export async function uploadPhoto(surveyId: string, photoId: string, blob: Blob, code?: string): Promise<PhotoUploadResult> {
   let res: Response;
+  const headers: Record<string, string> = { 'Content-Type': 'image/jpeg', Accept: 'application/json' };
+  if (code) headers['X-Access-Code'] = code;
   try {
     res = await fetch(`/api/surveys/${encodeURIComponent(surveyId)}/photos/${photoId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'image/jpeg', Accept: 'application/json' },
+      headers,
       body: blob,
       cache: 'no-store',
       signal: timeoutSignal(PHOTO_TIMEOUT_MS),
@@ -203,9 +236,14 @@ export async function uploadPhoto(surveyId: string, photoId: string, blob: Blob)
   }
   if (res.status === 409) {
     const { error } = await errorOf(res);
-    if (error === 'closed' || error === 'not_yet_open' || error === 'full') return { kind: error };
+    if (error === 'closed' || error === 'not_yet_open' || error === 'full' || error === 'course_closed') return { kind: error };
     return { kind: 'offline' };
   }
-  if (res.status === 422 || res.status === 413 || res.status === 415 || res.status === 400) return { kind: 'invalid' };
+  if (res.status === 422) {
+    const { error } = await errorOf(res);
+    if (error === 'code_unknown' || error === 'code_required') return { kind: error };
+    return { kind: 'invalid' };
+  }
+  if (res.status === 413 || res.status === 415 || res.status === 400) return { kind: 'invalid' };
   return { kind: 'offline' };
 }

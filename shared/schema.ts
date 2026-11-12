@@ -144,6 +144,16 @@ export interface SurveyDefinition {
    * assigned to the code's course (the code itself is not stored with the response).
    */
   accessCodes?: 'required' | 'optional';
+  /**
+   * With accessCodes "required": the link alone reveals nothing about the survey. Its definition
+   * (title, texts, questions, theme) is only handed out together with a valid access code.
+   */
+  gated?: boolean;
+  /**
+   * Participants use their own devices: with access codes, drafts are still kept on the device
+   * (not only for the browser tab, as for shared course devices) until they are sent.
+   */
+  personalDevices?: boolean;
   intro: TextBlock;
   /** Shown at the top of the start page; the start button needs its checkbox ticked. */
   notice?: ConfirmBlock;
@@ -283,6 +293,9 @@ export function validateDefinition(raw: unknown): string[] {
   if (d.accessCodes !== undefined && d.accessCodes !== 'required' && d.accessCodes !== 'optional') {
     errors.push('accessCodes must be "required" or "optional"');
   }
+  if (d.gated !== undefined && typeof d.gated !== 'boolean') errors.push('gated must be a boolean');
+  if (d.gated === true && d.accessCodes !== 'required') errors.push('gated needs accessCodes "required"');
+  if (d.personalDevices !== undefined && typeof d.personalDevices !== 'boolean') errors.push('personalDevices must be a boolean');
   checkTextBlock(d.intro, 'intro', errors);
   checkTextBlock(d.thanks, 'thanks', errors);
   if (d.privacy !== undefined) checkTextBlock(d.privacy, 'privacy', errors);

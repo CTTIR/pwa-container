@@ -117,6 +117,27 @@ describe('subdomains', () => {
     expect((await get('pwa.example.org.', '/admin', { Authorization: ADMIN })).status).toBe(200);
   });
 
+  it('addresses a gated survey on its host by a neutral alias, not by its id', async () => {
+    const def = JSON.parse(fs.readFileSync(new URL('../../examples/surveys/example-course-feedback/survey.json', import.meta.url), 'utf8'));
+    def.id = 'secret-exercise';
+    def.subdomain = 'obs42';
+    def.accessCodes = 'required';
+    def.gated = true;
+    fs.mkdirSync(path.join(surveysDir, def.id), { recursive: true });
+    fs.writeFileSync(path.join(surveysDir, def.id, 'survey.json'), JSON.stringify(def));
+    registry.reload();
+    const ctx = await get('obs42.example.org', '/api/context');
+    expect(ctx.body).not.toContain('secret');
+    expect(JSON.parse(ctx.body)).toEqual({ app: { id: 'app', type: 'survey' } });
+    const stub = await get('obs42.example.org', '/api/surveys/app');
+    expect(JSON.parse(stub.body)).toMatchObject({ gated: true, status: 'open' });
+    expect(stub.body).not.toContain(def.title);
+    // The alias only works on the gated survey's own host.
+    expect((await get('feedback.example.org', '/api/surveys/app')).status).toBe(404);
+    fs.rmSync(path.join(surveysDir, def.id), { recursive: true, force: true });
+    registry.reload();
+  });
+
   it('keeps serving the last good survey when its file becomes invalid', () => {
     const file = path.join(surveysDir, 'example-course-feedback', 'survey.json');
     const good = fs.readFileSync(file, 'utf8');

@@ -7,6 +7,7 @@ import {
   normalizeCode,
   type AnswerValue,
   type Answers,
+  type Locale,
   type SurveyDefinition,
 } from '../shared/schema.ts';
 import { checkCode, loadSurvey, type SubmitResult, type SurveyResponse } from './api.ts';
@@ -24,6 +25,8 @@ type Phase =
   | { kind: 'loading' }
   | { kind: 'not_found' }
   | { kind: 'load_error' }
+  /** Gated survey without a definition on this device: only the code entry is shown. */
+  | { kind: 'locked' }
   | { kind: 'unavailable'; reason: 'closed' | 'not_yet_open' | 'full' }
   | { kind: 'form' }
   | { kind: 'sending' }
@@ -50,7 +53,7 @@ function codeFromLink(): string | null {
 }
 const linkCode = codeFromLink();
 
-type CodeState = 'idle' | 'checking' | 'ok' | 'unknown' | 'used' | 'offline' | 'required' | 'course_closed' | 'busy';
+type CodeState = 'idle' | 'checking' | 'ok' | 'unknown' | 'used' | 'offline' | 'unreachable' | 'required' | 'course_closed' | 'busy';
 type Notice = 'changed' | 'code' | null;
 
 /** Keeps the answers whose key still exists and whose value still fits the definition. */
@@ -61,6 +64,11 @@ function migrateAnswers(def: SurveyDefinition, answers: Answers): Answers {
     if (isAnswered(value) && fieldProblem(def, field, value) === null) out[field.key] = value;
   }
   return out;
+}
+
+/** Drafts and the done mark only for this tab: surveys with codes on shared devices. */
+function tabOnly(def: SurveyDefinition | null | undefined): boolean {
+  return def ? !!def.accessCodes && !def.personalDevices : true;
 }
 
 function sectionProblems(def: SurveyDefinition, index: number, answers: Answers): string[] {
@@ -87,6 +95,10 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   };
   /** Unsent answers are kept on the device although the survey cannot take them now. */
   const [keptAnswers, setKeptAnswers] = useState(false);
+  /** Locale of a gated survey whose definition is not known yet (code entry page). */
+  const [gatedLocale, setGatedLocale] = useState<string | null>(null);
+  /** The survey hands out its definition only with a valid access code. */
+  const gated = useRef(false);
 
   // Latest values, updated together with the state, so async handlers (code check, submit,
   // retries) never write a draft from a stale render.
@@ -108,7 +120,11 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const focusHeading = useRef(false);
 
   const def = survey?.definition;
-  const t: Strings = def ? stringsFor(def.locale) : browserStrings();
+  const t: Strings = def
+    ? stringsFor(def.locale)
+    : gatedLocale === 'de' || gatedLocale === 'en'
+      ? stringsFor(gatedLocale as Locale)
+      : browserStrings();
 
   const setAnswers = (a: Answers) => {
     live.current.answers = a;
@@ -128,7 +144,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   };
   const adoptDefinition = (data: SurveyResponse) => {
     // Surveys with codes keep drafts only for this tab (shared devices).
-    storage.useSessionDrafts(!!data.definition.accessCodes);
+    storage.useSessionDrafts(tabOnly(data.definition));
     live.current.def = data.definition;
     document.title = data.definition.title;
     document.documentElement.lang = data.definition.locale;
@@ -218,9 +234,17 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
    * `draftVersion`: version the draft is saved under when no definition is loaded yet.
    */
   const reloadDefinition = async (draftVersion?: number): Promise<SurveyResponse | null> => {
-    const result = await loadSurvey(surveyId);
-    if (result.kind !== 'ok') return null;
-    const data = result.data;
+    let data: SurveyResponse;
+    if (gated.current) {
+      const normalized = normalizeCode(live.current.code);
+      const unlocked = normalized ? await checkCode(surveyId, normalized) : null;
+      if (unlocked?.kind !== 'ok' || !unlocked.data) return null;
+      data = unlocked.data;
+    } else {
+      const result = await loadSurvey(surveyId);
+      if (result.kind !== 'ok') return null;
+      data = result.data;
+    }
     storage.saveDefinitionCopy(surveyId, data);
     await applyTheme(data.definition.theme);
     const before = live.current.def?.version ?? draftVersion;
@@ -257,8 +281,10 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         dropOutbox();
         void flushOthers(outbox.submissionId);
         storage.clearAllDrafts(surveyId);
+        // A gated survey's questions do not stay on the device for whoever opens the link next.
+        if (gated.current) storage.clearDefinitionCopy(surveyId);
         const d = live.current.def;
-        storage.markDone(surveyId, d ? !!d.accessCodes : true);
+        storage.markDone(surveyId, tabOnly(d));
         setAnswers({});
         setCourse(null);
         setCode('');
@@ -305,7 +331,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
         setCodeState(states[result.kind]);
         setNotice('code');
         focusHeading.current = true;
-        setPhase({ kind: 'form' });
+        // A gated survey whose definition is not on this device: a valid code opens it again.
+        setPhase(live.current.def ? { kind: 'form' } : { kind: 'locked' });
         return;
       }
       case 'notice_not_confirmed': {
@@ -398,10 +425,25 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     if (result.kind === 'not_found') return setPhase({ kind: 'not_found' });
     // Offline (also on a first visit before the service worker caches anything): use the copy
     // of the definition kept from the last successful load.
-    const data = result.kind === 'ok' ? result.data : storage.loadDefinitionCopy(surveyId);
+    let data = result.kind === 'ok' ? result.data : storage.loadDefinitionCopy(surveyId);
     if (result.kind === 'ok') storage.saveDefinitionCopy(surveyId, result.data);
     const outbox = storage.loadOutbox(surveyId) ?? outboxRef.current;
     outboxRef.current = outbox;
+    if (result.kind === 'gated') {
+      // The link alone shows nothing of the survey. A copy on this device (opened with a code
+      // before) is used with the current state; otherwise a code has to open it.
+      gated.current = true;
+      setGatedLocale(result.stub.locale);
+      if (data) data = { ...data, status: result.stub.status };
+      else if (outbox) return void trySend(outbox);
+      else if (result.stub.status !== 'open') return showUnavailable(result.stub.status);
+      else {
+        const scanned = pendingLinkCode.current;
+        if (scanned && (await unlock(scanned, cancelled))) return;
+        if (!cancelled()) setPhase({ kind: 'locked' });
+        return;
+      }
+    }
     if (!data) return setPhase(outbox ? { kind: 'pending' } : { kind: 'load_error' });
     await applyTheme(data.definition.theme);
     if (cancelled()) return;
@@ -413,7 +455,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     const d = data.definition;
     if (data.status !== 'open') return showUnavailable(data.status);
     const scanned = pendingLinkCode.current;
-    if (storage.isDone(surveyId, !!d.accessCodes)) {
+    if (storage.isDone(surveyId, tabOnly(d))) {
       // A code in the link starts a new participation instead of the thank-you page.
       if (!scanned) return setPhase({ kind: 'thanks' });
       storage.clearDone(surveyId);
@@ -424,8 +466,70 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     setPhase({ kind: 'form' });
   };
 
+  /**
+   * Gated survey: a valid code brings the definition. Resolves true when the survey is shown
+   * (or its state, when it takes no answers); false leaves the code entry with a message.
+   */
+  const unlock = async (raw: string, cancelled: () => boolean = () => false): Promise<boolean> => {
+    const normalized = normalizeCode(raw);
+    if (!normalized) {
+      setCodeState('required');
+      return false;
+    }
+    setCodeState('checking');
+    const result = await checkCode(surveyId, normalized);
+    if (cancelled()) return false;
+    switch (result.kind) {
+      case 'ok': {
+        if (!result.data) {
+          setCodeState('unreachable');
+          return false;
+        }
+        const data = result.data;
+        storage.saveDefinitionCopy(surveyId, data);
+        await applyTheme(data.definition.theme);
+        if (cancelled()) return false;
+        adoptDefinition(data);
+        pendingLinkCode.current = null;
+        if (data.status !== 'open') {
+          showUnavailable(data.status);
+          return true;
+        }
+        const formatted = formatCode(normalized);
+        storage.clearDone(surveyId);
+        setCode(formatted);
+        restoreDraft(data.definition, formatted);
+        setCourse(result.course);
+        setCodeState('ok');
+        saveDraft();
+        focusHeading.current = true;
+        setPhase({ kind: 'form' });
+        return true;
+      }
+      case 'offline':
+        setCodeState('unreachable');
+        return false;
+      case 'busy':
+        setCodeState('busy');
+        return false;
+      case 'closed':
+      case 'not_yet_open':
+        setCodeState('idle');
+        showUnavailable(result.kind);
+        return true;
+      default:
+        setCodeState(result.kind);
+        return false;
+    }
+  };
+
   /** A code scanned while the page is open (#code= changed). */
   const onScanned = (scanned: string) => {
+    if (phase.kind === 'locked') {
+      setCode(scanned);
+      void unlock(scanned);
+      return;
+    }
     if (phase.kind === 'thanks') return startFresh(scanned);
     if (phase.kind === 'form' && !live.current.course) {
       setCode(scanned);
@@ -663,6 +767,29 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   if (phase.kind === 'not_found') {
     return <Shell><Message text={t.notFound} /></Shell>;
   }
+  if (phase.kind === 'locked') {
+    // Nothing about the survey here: no title, texts, theme or organiser link.
+    return (
+      <Shell>
+        <form
+          className="intro"
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (codeState !== 'checking') void unlock(live.current.code);
+          }}
+        >
+          <h1 className="page-title" id={HEADING_ID} tabIndex={-1}>{t.lockedTitle}</h1>
+          <p>{t.lockedText}</p>
+          <CodeField t={t} code={code} setCode={onCodeInput} state={codeState} course={null} optional={false} hint={t.lockedHint} />
+          <div className="nav">
+            <span />
+            <button type="submit" className="btn btn-primary" disabled={codeState === 'checking'}>{t.lockedContinue}</button>
+          </div>
+        </form>
+      </Shell>
+    );
+  }
   if (phase.kind === 'load_error') {
     return (
       <Shell {...shellProps}>
@@ -764,7 +891,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
             </section>
           )}
           <Paragraphs paragraphs={def.intro.paragraphs} />
-          {def.accessCodes && codeField}
+          {def.accessCodes &&
+            (def.gated && course && codeState === 'ok' ? <p className="course-line">{t.course(course)}</p> : codeField)}
           {def.privacy && (
             <details className="privacy">
               <summary>{def.privacy.heading ?? t.privacyHeading}</summary>
@@ -907,6 +1035,7 @@ function CodeField({
   state,
   course,
   optional,
+  hint,
 }: {
   t: Strings;
   code: string;
@@ -914,6 +1043,7 @@ function CodeField({
   state: CodeState;
   course: string | null;
   optional: boolean;
+  hint?: string;
 }) {
   const messages: Partial<Record<CodeState, string>> = {
     checking: t.codeChecking,
@@ -921,6 +1051,7 @@ function CodeField({
     used: t.codeUsed,
     required: t.codeRequired,
     offline: t.codeOffline,
+    unreachable: t.lockedOffline,
     course_closed: t.courseClosed,
     busy: t.codeBusy,
   };
@@ -944,7 +1075,7 @@ function CodeField({
         aria-invalid={bad || undefined}
         aria-describedby={message ? 'access-code-hint access-code-message' : 'access-code-hint'}
       />
-      <p className="code-hint" id="access-code-hint">{optional ? t.codeOptionalHint : t.codeHint}</p>
+      <p className="code-hint" id="access-code-hint">{hint ?? (optional ? t.codeOptionalHint : t.codeHint)}</p>
       {state === 'ok' && course && <p className="course-line">{t.course(course)}</p>}
       {message && <p id="access-code-message" className={bad ? 'code-error' : 'code-note'} role={bad ? 'alert' : 'status'}>{message}</p>}
     </div>

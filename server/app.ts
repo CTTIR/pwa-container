@@ -312,9 +312,42 @@ export function createApp(deps: AppDeps) {
   const indexHtml = path.join(distDir, 'index.html');
   const adminHtml = path.join(distDir, 'admin.html');
 
+  /** Path segment that addresses a gated survey on its own host instead of its (telling) id. */
+  const GATED_ALIAS = 'app';
+
+  /** What anyone with the link learns about a gated survey: that it needs a code, and its state. */
+  function gatedStub(app: AppEntry) {
+    const def = app.survey!.def;
+    return { gated: true, locale: def.locale, ...surveyPublic(app) };
+  }
+
   function surveyPublic(app: AppEntry) {
     const def = app.survey!.def;
     return { status: registry.statusOf(app, now()), opensAt: def.opensAt ?? null, closesAt: def.closesAt ?? null };
+  }
+
+  /**
+   * Gated surveys answer nothing about their questions to requests without a valid code: the code
+   * is checked before anything else of the request is looked at. Resolves true when the request
+   * may go on; otherwise it has been answered. Used codes pass here (the insert refuses them), so
+   * this check cannot tell which slip was used either.
+   */
+  function gateByCode(res: ServerResponse, app: AppEntry, raw: unknown): boolean {
+    if (!app.survey?.def.gated) return true;
+    const code = typeof raw === 'string' && raw.length <= 32 ? normalizeCode(raw) : '';
+    if (!code) {
+      sendJson(res, 422, { error: 'code_required' });
+      return false;
+    }
+    const check = store.checkCode(app.id, code);
+    if (check.status === 'ok' || check.status === 'used') return true;
+    if (check.status === 'closed') {
+      sendJson(res, 409, { error: 'course_closed' });
+      return false;
+    }
+    if (!unknownCodeBucket(app.id).take()) sendJson(res, 429, { error: 'too_many_attempts' });
+    else sendJson(res, 422, { error: 'code_unknown' });
+    return false;
   }
 
   async function handleSubmit(req: IncomingMessage, res: ServerResponse, app: AppEntry): Promise<void> {
@@ -338,6 +371,8 @@ export function createApp(deps: AppDeps) {
       sendJson(res, 400, { error: 'invalid_submission_id' });
       return;
     }
+    // Gated: no version, field or photo detail before the code is known to be valid.
+    if (!gateByCode(res, app, payload.code)) return;
     // Answers given to another version of the questions must be reviewed by the participant.
     if (payload.surveyVersion !== undefined && payload.surveyVersion !== def.version) {
       sendJson(res, 409, { error: 'version_changed', version: def.version });
@@ -407,6 +442,11 @@ export function createApp(deps: AppDeps) {
   /** One photo of an answer set, sent before the answers. */
   async function handlePhotoUpload(req: IncomingMessage, res: ServerResponse, app: AppEntry, photoId: string): Promise<void> {
     const def = app.survey!.def;
+    // Gated: nothing (not even whether the survey takes photos) before a valid code.
+    if (def.gated && !gateByCode(res, app, req.headers['x-access-code'])) {
+      req.resume();
+      return;
+    }
     if (!hasPhotoFields(def)) return sendJson(res, 404, { error: 'no_photos' });
     if (!PHOTO_ID_PATTERN.test(photoId)) return sendJson(res, 400, { error: 'invalid_photo_id' });
     const type = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
@@ -495,7 +535,16 @@ export function createApp(deps: AppDeps) {
     // which slip was used by checking codes.
     if (!codeCheckBucket(app.id).take()) return sendJson(res, 429, { error: 'too_many_attempts' });
     const check = store.checkCode(app.id, code);
-    if (check.status === 'ok' || check.status === 'used') return sendJson(res, 200, { status: 'ok', course: check.course });
+    if (check.status === 'ok' || check.status === 'used') {
+      // Gated surveys hand out their definition only here, together with a valid code.
+      // `status` is this check's answer here, so the survey's state goes as `surveyStatus`.
+      let unlocked = {};
+      if (app.survey.def.gated) {
+        const { status: surveyStatus, ...dates } = surveyPublic(app);
+        unlocked = { definition: JSON.parse(app.survey.json), surveyStatus, ...dates };
+      }
+      return sendJson(res, 200, { status: 'ok', course: check.course, ...unlocked });
+    }
     if (check.status === 'closed') return sendJson(res, 409, { error: 'course_closed' });
     if (!unknownCodeBucket(app.id).take()) return sendJson(res, 429, { error: 'too_many_attempts' });
     sendJson(res, 404, { error: 'code_unknown' });
@@ -1347,7 +1396,10 @@ export function createApp(deps: AppDeps) {
           return await serveStaticApp(req, res, onHost, pathname);
         }
         // Survey host: the participant app at "/", its own API, the shared app assets and themes.
-        if (pathname === '/api/context') return sendJson(res, 200, { app: { id: onHost.id, type: onHost.type } }, 'no-cache');
+        if (pathname === '/api/context') {
+          const id = onHost.survey?.def.gated ? GATED_ALIAS : onHost.id;
+          return sendJson(res, 200, { app: { id, type: onHost.type } }, 'no-cache');
+        }
         // Second entry for organisers: /admin on the survey's own host shows its results and courses.
         if (parts[0] === 'admin') {
           if (parts[1] === 'api' && parts[2] === 'results' && parts[3] === onHost.id) {
@@ -1360,6 +1412,8 @@ export function createApp(deps: AppDeps) {
           if (!serveFile(req, res, adminHtml, 'no-store')) sendText(res, 503, 'App not built');
           return;
         }
+        const gatedHost = !!onHost.survey?.def.gated;
+        if (parts[0] === 'api' && gatedHost && parts[1] === 'surveys' && parts[2] === GATED_ALIAS) parts[2] = onHost.id;
         if ((parts[0] === 'api' && parts[2] !== onHost.id) || parts[0] === 'a' || parts[0] === 's') {
           return sendText(res, 404, 'Not found');
         }
@@ -1371,6 +1425,7 @@ export function createApp(deps: AppDeps) {
         const app = registry.publicSurvey(parts[2]);
         if (!app) return sendJson(res, 404, { error: 'not_found' });
         if (parts.length === 3 && (method === 'GET' || method === 'HEAD')) {
+          if (app.survey!.def.gated) return sendJson(res, 200, gatedStub(app), 'no-cache');
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-cache' });
           res.end(JSON.stringify({ definition: JSON.parse(app.survey!.json), ...surveyPublic(app) }));
           return;

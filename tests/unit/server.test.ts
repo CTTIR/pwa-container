@@ -580,6 +580,89 @@ describe('courses and single-use codes', () => {
   });
 });
 
+describe('gated surveys (the link alone reveals nothing)', () => {
+  const def = () => {
+    const d = JSON.parse(fs.readFileSync(path.join(surveysDir, 'example-course-feedback', 'survey.json'), 'utf8'));
+    d.id = 'gated-survey';
+    d.accessCodes = 'required';
+    d.gated = true;
+    return d;
+  };
+  const adminWrite = { Authorization: ADMIN, ...WRITE };
+  const api = (rest: string) => `${base}/api/surveys/gated-survey${rest}`;
+  const json = { 'Content-Type': 'application/json' };
+  const sid = (n: number) => `${String(n).padStart(8, '0')}-6666-4666-8666-666666666666`;
+  let codes: string[] = [];
+  let title = '';
+
+  it('refuses gated without required codes', async () => {
+    const d = def();
+    d.accessCodes = 'optional';
+    const res = await fetch(`${base}/admin/api/apps/surveys`, { method: 'POST', headers: adminWrite, body: JSON.stringify(d) });
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(await res.json())).toContain('gated needs accessCodes');
+  });
+
+  it('shows only that a code is needed, without any survey text', async () => {
+    const d = def();
+    title = d.title;
+    expect((await fetch(`${base}/admin/api/apps/surveys`, { method: 'POST', headers: adminWrite, body: JSON.stringify(d) })).status).toBe(201);
+    const res = await fetch(api(''));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ gated: true, locale: d.locale, status: 'open', opensAt: d.opensAt ?? null, closesAt: d.closesAt ?? null });
+    const created = await fetch(`${base}/admin/api/results/gated-survey/courses`, {
+      method: 'POST',
+      headers: adminWrite,
+      body: JSON.stringify({ label: 'Übung', eventDate: '2026-11-14', count: 2 }),
+    });
+    expect(created.status).toBe(201);
+    codes = ((await created.json()) as { codes: string[] }).codes;
+  });
+
+  it('hands out the definition only together with a valid code', async () => {
+    const bad = await fetch(api('/code'), { method: 'POST', headers: json, body: JSON.stringify({ code: 'ZZZZ-ZZZZ' }) });
+    expect(bad.status).toBe(404);
+    expect(await bad.text()).not.toContain(title);
+    const ok = await fetch(api('/code'), { method: 'POST', headers: json, body: JSON.stringify({ code: codes[0] }) });
+    const body = await ok.json();
+    expect(body).toMatchObject({ status: 'ok', surveyStatus: 'open', course: 'Übung', definition: { title } });
+  });
+
+  it('tells nothing about questions, versions or photos to requests without a valid code', async () => {
+    const post = (code: unknown, body: unknown = { nonsense: 1 }, version: unknown = 99) =>
+      fetch(api('/responses'), { method: 'POST', headers: json, body: JSON.stringify({ submissionId: sid(1), surveyVersion: version, answers: body, code }) });
+    let res = await post(undefined);
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'code_required' });
+    res = await post('ZZZZ-ZZZZ');
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'code_unknown' });
+    // With a valid code the usual answers come back.
+    res = await post(codes[1]);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: 'version_changed' });
+    // Photos: no "this survey takes no photos" before the code.
+    const photo = (code?: string) =>
+      fetch(api('/photos/0123456789abcdef0123456789abcdef'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'image/jpeg', ...(code ? { 'X-Access-Code': code } : {}) },
+        body: Buffer.from([0xff, 0xd8, 0xff]),
+      });
+    res = await photo();
+    expect(res.status).toBe(422);
+    expect(await res.json()).toEqual({ error: 'code_required' });
+    expect((await photo(codes[1])).status).toBe(404); // no photo fields in this survey
+  });
+
+  it('takes answers with a valid code once', async () => {
+    const post = (n: number, code: string) =>
+      fetch(api('/responses'), { method: 'POST', headers: json, body: JSON.stringify({ submissionId: sid(n), surveyVersion: 1, answers, code }) });
+    expect((await post(2, codes[1])).status).toBe(201);
+    expect((await post(3, codes[1])).status).toBe(422);
+  });
+});
+
 describe('optional codes', () => {
   it('accepts no further code-less answers once those are released, also with disguised empty codes', async () => {
     const d = JSON.parse(fs.readFileSync(path.join(surveysDir, 'example-course-feedback', 'survey.json'), 'utf8'));

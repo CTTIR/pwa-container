@@ -31,9 +31,10 @@ export async function sendSubmission(surveyId: string, outbox: Outbox, save: (o:
     for (const id of ids) {
       if (missing && !missing.includes(id)) continue;
       const blob = await photoDb.get(id);
-      const up = blob ? await uploadPhoto(surveyId, id, blob) : { kind: 'invalid' as const };
+      const up = blob ? await uploadPhoto(surveyId, id, blob, outbox.code) : { kind: 'invalid' as const };
       if (up.kind === 'offline') return { kind: 'offline' };
       if (up.kind === 'closed' || up.kind === 'not_yet_open' || up.kind === 'full') return { kind: up.kind };
+      if (up.kind === 'code_unknown' || up.kind === 'code_required' || up.kind === 'course_closed') return { kind: up.kind };
       if (up.kind === 'invalid') answers = withoutPhoto(answers, id);
     }
     if (answers !== outbox.answers) {

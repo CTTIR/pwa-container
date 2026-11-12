@@ -211,6 +211,7 @@ export const storage = {
     const v = get<unknown>(definitionKey(id));
     return isSurveyResponse(v) ? v : null;
   },
+  clearDefinitionCopy: (id: string) => remove(definitionKey(id)),
   saveDefinitionCopy: (id: string, data: SurveyResponse) =>
     set(definitionKey(id), { definition: data.definition, status: data.status, opensAt: data.opensAt, closesAt: data.closesAt }),
   /**
