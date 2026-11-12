@@ -104,15 +104,29 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
           return (
             <div key={c.id} className={`matrix-row${rowMissing ? ' is-invalid' : ''}`}>
               <div className="matrix-label">{c.label}</div>
-              <ScaleButtons
-                scale={def.scales[item.scale]}
-                value={answers[key] as number | string | undefined}
-                onChange={(v) => onAnswer(key, v)}
-                label={`${label} – ${c.label}`}
-                invalid={rowMissing}
-                required={required}
-                describedBy={ids(hintId, rowMissing && errorId(key))}
-              />
+              {def.scales[item.scale].display === 'slider' ? (
+                <ScaleSlider
+                  scale={def.scales[item.scale]}
+                  anchors={scaleEnds(def.scales[item.scale])}
+                  value={answers[key] as number | string | undefined}
+                  onChange={(v) => onAnswer(key, v)}
+                  label={`${label} – ${c.label}`}
+                  t={t}
+                  invalid={rowMissing}
+                  required={required}
+                  describedBy={ids(hintId, rowMissing && errorId(key))}
+                />
+              ) : (
+                <ScaleButtons
+                  scale={def.scales[item.scale]}
+                  value={answers[key] as number | string | undefined}
+                  onChange={(v) => onAnswer(key, v)}
+                  label={`${label} – ${c.label}`}
+                  invalid={rowMissing}
+                  required={required}
+                  describedBy={ids(hintId, rowMissing && errorId(key))}
+                />
+              )}
               {rowMissing && <FieldError fieldKey={key} t={t} />}
             </div>
           );
