@@ -1,8 +1,10 @@
-import type { AnswerValue, Answers, Item, SurveyDefinition } from '../../shared/schema.ts';
-import { DEFAULT_TEXT_MAX } from '../../shared/schema.ts';
+import { useState } from 'react';
+import type { AnswerValue, Answers, Item, Scale, ScaleAnchors, SurveyDefinition } from '../../shared/schema.ts';
+import { commentItem, DEFAULT_TEXT_MAX } from '../../shared/schema.ts';
 import type { Strings } from '../i18n.ts';
 import { Inline, stripMarkers } from './RichText.tsx';
 import { radioKeyDown, ScaleButtons } from './ScaleButtons.tsx';
+import { ScaleSlider } from './ScaleSlider.tsx';
 
 interface Props {
   def: SurveyDefinition;
@@ -11,6 +13,10 @@ interface Props {
   missing: Set<string>;
   onAnswer: (key: string, value: AnswerValue | undefined) => void;
   t: Strings;
+}
+
+function scaleEnds(scale: Scale): ScaleAnchors {
+  return { min: scale.options[0].label, max: scale.options[scale.options.length - 1].label };
 }
 
 const errorId = (key: string) => `err-${key}`;
@@ -42,16 +48,31 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
       {item.hint && <p className="item-hint" id={hintId}>{item.hint}</p>}
       {item.type === 'scale' && (
         <>
-          <ScaleButtons
-            scale={def.scales[item.scale]}
-            value={answers[item.id] as number | string | undefined}
-            onChange={(v) => onAnswer(item.id, v)}
-            label={label}
-            invalid={isMissing}
-            required={required}
-            describedBy={ids(hintId, isMissing && errorId(item.id))}
-          />
+          {def.scales[item.scale].display === 'slider' ? (
+            <ScaleSlider
+              scale={def.scales[item.scale]}
+              anchors={item.anchors ?? scaleEnds(def.scales[item.scale])}
+              value={answers[item.id] as number | string | undefined}
+              onChange={(v) => onAnswer(item.id, v)}
+              label={label}
+              t={t}
+              invalid={isMissing}
+              required={required}
+              describedBy={ids(hintId, isMissing && errorId(item.id))}
+            />
+          ) : (
+            <ScaleButtons
+              scale={def.scales[item.scale]}
+              value={answers[item.id] as number | string | undefined}
+              onChange={(v) => onAnswer(item.id, v)}
+              label={label}
+              invalid={isMissing}
+              required={required}
+              describedBy={ids(hintId, isMissing && errorId(item.id))}
+            />
+          )}
           {isMissing && <FieldError fieldKey={item.id} t={t} />}
+          {item.comment && <Comment item={commentItem(item)} label={item.comment.label} answers={answers} missing={missing} onAnswer={onAnswer} t={t} />}
         </>
       )}
       {item.type === 'matrix' &&
@@ -102,6 +123,52 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
         </>
       )}
     </section>
+  );
+}
+
+/** Remark under a scale item: collapsed behind a link until opened or filled. */
+function Comment({
+  item,
+  label,
+  answers,
+  missing,
+  onAnswer,
+  t,
+}: {
+  item: Extract<Item, { type: 'text' }>;
+  label: string;
+  answers: Answers;
+  missing: Set<string>;
+  onAnswer: (key: string, value: AnswerValue | undefined) => void;
+  t: Strings;
+}) {
+  const value = answers[item.id];
+  const filled = typeof value === 'string' && value.length > 0;
+  const [open, setOpen] = useState(filled);
+  const isMissing = missing.has(item.id);
+  if (!open && !filled && !isMissing) {
+    return (
+      <button type="button" className="btn btn-link comment-toggle" onClick={() => setOpen(true)} aria-expanded={false}>
+        + {label}
+      </button>
+    );
+  }
+  return (
+    <div className="comment-field">
+      <div className="comment-label">{label} <span className="item-optional">({t.optional})</span></div>
+      <TextField
+        item={item}
+        value={value}
+        onChange={(v) => onAnswer(item.id, v)}
+        t={t}
+        label={stripMarkers(item.text)}
+        invalid={isMissing}
+        describedBy={isMissing ? errorId(item.id) : undefined}
+        rows={3}
+        autoFocus={!filled}
+      />
+      {isMissing && <FieldError fieldKey={item.id} t={t} />}
+    </div>
   );
 }
 
@@ -170,6 +237,8 @@ function TextField({
   label,
   invalid,
   describedBy,
+  rows = 5,
+  autoFocus = false,
 }: {
   item: Extract<Item, { type: 'text' }>;
   value: AnswerValue | undefined;
@@ -178,6 +247,8 @@ function TextField({
   label: string;
   invalid: boolean;
   describedBy: string | undefined;
+  rows?: number;
+  autoFocus?: boolean;
 }) {
   const max = item.maxLength ?? DEFAULT_TEXT_MAX;
   const text = typeof value === 'string' ? value : '';
@@ -194,7 +265,7 @@ function TextField({
   };
   return (
     <div className="text-field">
-      {item.multiline ? <textarea rows={5} {...common} /> : <input type="text" {...common} />}
+      {item.multiline ? <textarea rows={rows} autoFocus={autoFocus} {...common} /> : <input type="text" {...common} />}
       <div className="text-count">{t.chars(text.length, max)}</div>
     </div>
   );

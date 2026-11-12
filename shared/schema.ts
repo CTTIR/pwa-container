@@ -12,6 +12,17 @@ export interface Scale {
   options: ScaleOption[];
   /** Optional "not applicable" choice, stored as its string value (e.g. "NB"). */
   notApplicable?: { value: string; label: string };
+  /**
+   * "buttons" (default): one button per option. "slider": a slider over the options, which must
+   * be consecutive integers; every value is marked on the track.
+   */
+  display?: 'buttons' | 'slider';
+}
+
+/** Words at the low and high end of a scale, e.g. "unklar" … "eindeutig". */
+export interface ScaleAnchors {
+  min: string;
+  max: string;
 }
 
 interface BaseItem {
@@ -21,9 +32,20 @@ interface BaseItem {
   hint?: string;
 }
 
+/** Optional free-text remark shown under a scale item, stored as its own text field. */
+export interface ItemComment {
+  /** Answer key of the remark; defaults to `<item id>_txt`. */
+  id?: string;
+  label: string;
+  maxLength?: number;
+}
+
 export interface ScaleItem extends BaseItem {
   type: 'scale';
   scale: string;
+  /** End words for this item; default: the labels of the scale's first and last option. */
+  anchors?: ScaleAnchors;
+  comment?: ItemComment;
 }
 
 export interface MatrixColumn {
@@ -57,6 +79,8 @@ export interface Section {
   id: string;
   title: string;
   description?: string;
+  /** Short label (e.g. a roman numeral) shown instead of the running section number. */
+  label?: string;
   /** Scale whose full legend is shown above the section's items. */
   legendScale?: string;
   items: Item[];
@@ -100,6 +124,8 @@ export interface SurveyDefinition {
   thanks: TextBlock;
   scales: Record<string, Scale>;
   sections: Section[];
+  /** Show a menu on every section page to jump to any other section. */
+  sectionNav?: boolean;
 }
 
 export type AnswerValue = number | string | string[];
@@ -111,6 +137,8 @@ export interface Field {
   item: Item;
   sectionId: string;
   column?: MatrixColumn;
+  /** For the remark of a scale item: the id of that item. */
+  parent?: string;
 }
 
 export const DEFAULT_TEXT_MAX = 1000;
@@ -118,6 +146,22 @@ export const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 export const SURVEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{2,63}$/;
 /** One DNS label: lowercase letters, digits and inner hyphens. */
 export const HOST_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** The text item that stores the remark of a scale item. */
+export function commentItem(item: ScaleItem): TextItem {
+  const c = item.comment!;
+  return {
+    id: c.id ?? `${item.id}_txt`,
+    type: 'text',
+    text: `${stripBold(item.text)} – ${c.label}`,
+    multiline: true,
+    maxLength: c.maxLength,
+  };
+}
+
+function stripBold(text: string): string {
+  return text.replace(/\*\*/g, '');
+}
 
 /** All answer fields of a survey in display order. */
 export function fieldsOf(def: SurveyDefinition): Field[] {
@@ -130,6 +174,10 @@ export function fieldsOf(def: SurveyDefinition): Field[] {
         }
       } else {
         out.push({ key: item.id, item, sectionId: section.id });
+        if (item.type === 'scale' && item.comment) {
+          const c = commentItem(item);
+          out.push({ key: c.id, item: c, sectionId: section.id, parent: item.id });
+        }
       }
     }
   }
@@ -191,6 +239,7 @@ export function validateDefinition(raw: unknown): string[] {
   checkTextBlock(d.intro, 'intro', errors);
   checkTextBlock(d.thanks, 'thanks', errors);
   if (d.privacy !== undefined) checkTextBlock(d.privacy, 'privacy', errors);
+  if (d.sectionNav !== undefined && typeof d.sectionNav !== 'boolean') errors.push('sectionNav must be a boolean');
   if (d.notice !== undefined) {
     checkTextBlock(d.notice, 'notice', errors);
     if (!isRecord(d.notice) || !isNonEmptyString(d.notice.confirm)) errors.push('notice.confirm is required');
@@ -214,6 +263,15 @@ export function validateDefinition(raw: unknown): string[] {
           errors.push(`scale ${name} repeats value ${String(o.value)}`);
         } else {
           values.add(o.value as number);
+        }
+      }
+      if (scale.display !== undefined && scale.display !== 'buttons' && scale.display !== 'slider') {
+        errors.push(`scale ${name}.display must be "buttons" or "slider"`);
+      }
+      if (scale.display === 'slider') {
+        const vals = scale.options.map((o) => (isRecord(o) ? o.value : NaN));
+        if (!vals.every((v, i) => Number.isInteger(v) && (i === 0 || v === (vals[i - 1] as number) + 1))) {
+          errors.push(`scale ${name}: a slider needs consecutive ascending integer values`);
         }
       }
       if (scale.notApplicable !== undefined) {
@@ -241,6 +299,9 @@ export function validateDefinition(raw: unknown): string[] {
     else if (sectionIds.has(section.id)) errors.push(`${where}.id ${section.id} is duplicated`);
     else sectionIds.add(section.id);
     if (!isNonEmptyString(section.title)) errors.push(`${where}.title is required`);
+    if (section.label !== undefined && (typeof section.label !== 'string' || section.label.length > 8)) {
+      errors.push(`${where}.label must be a string of at most 8 characters`);
+    }
     if (section.legendScale !== undefined && !scaleNames.has(section.legendScale as string)) {
       errors.push(`${where}.legendScale refers to an unknown scale`);
     }
@@ -267,6 +328,21 @@ export function validateDefinition(raw: unknown): string[] {
         case 'scale':
           if (!scaleNames.has(item.scale as string)) errors.push(`${w} refers to unknown scale`);
           addKey(item.id);
+          if (item.anchors !== undefined && (!isRecord(item.anchors) || !isNonEmptyString(item.anchors.min) || !isNonEmptyString(item.anchors.max))) {
+            errors.push(`${w}.anchors needs min and max`);
+          }
+          if (item.comment !== undefined) {
+            const c = item.comment;
+            if (!isRecord(c) || !isNonEmptyString(c.label)) {
+              errors.push(`${w}.comment needs a label`);
+            } else {
+              if (c.id !== undefined && (typeof c.id !== 'string' || !ID_PATTERN.test(c.id))) errors.push(`${w}.comment.id is invalid`);
+              if (c.maxLength !== undefined && (!Number.isInteger(c.maxLength) || (c.maxLength as number) < 1 || (c.maxLength as number) > 20000)) {
+                errors.push(`${w}.comment.maxLength must be an integer between 1 and 20000`);
+              }
+              addKey(typeof c.id === 'string' ? c.id : `${item.id}_txt`);
+            }
+          }
           break;
         case 'matrix':
           if (!scaleNames.has(item.scale as string)) errors.push(`${w} refers to unknown scale`);

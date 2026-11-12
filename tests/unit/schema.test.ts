@@ -55,3 +55,66 @@ describe('answers', () => {
     expect(surveyStatus(def, new Date('2030-02-02T00:00:00Z'))).toBe('closed');
   });
 });
+
+describe('slider scales, item remarks and section labels', () => {
+  const def = {
+    id: 'slider-test',
+    version: 1,
+    locale: 'de',
+    title: 'Slider',
+    sectionNav: true,
+    intro: { paragraphs: [] },
+    thanks: { paragraphs: [] },
+    scales: {
+      s: {
+        display: 'slider',
+        options: [0, 1, 2, 3, 4, 5].map((v) => ({ value: v, label: `L${v}` })),
+        notApplicable: { value: '-9', label: 'nicht beobachtet' },
+      },
+    },
+    sections: [
+      {
+        id: 'B1',
+        label: 'I',
+        title: 'Block',
+        items: [
+          { id: 'q1', type: 'scale', scale: 's', text: 'Frage **eins**', anchors: { min: 'schlecht', max: 'gut' }, comment: { label: 'Anmerkung', maxLength: 10 } },
+          { id: 'q2', type: 'scale', scale: 's', text: 'Frage zwei', comment: { id: 'q2_note', label: 'Anmerkung' } },
+        ],
+      },
+    ],
+  } as unknown as SurveyDefinition;
+
+  it('accepts the definition and adds one remark field after each commented item', () => {
+    expect(validateDefinition(def)).toEqual([]);
+    const fields = fieldsOf(def);
+    expect(fields.map((f) => f.key)).toEqual(['q1', 'q1_txt', 'q2', 'q2_note']);
+    expect(fields[1]).toMatchObject({ parent: 'q1', item: { type: 'text', text: 'Frage eins – Anmerkung', maxLength: 10 } });
+  });
+
+  it('validates values, the not-observed code and remark length', () => {
+    expect(validateAnswers(def, { q1: 0, q1_txt: 'kurz', q2: '-9' })).toEqual({});
+    expect(validateAnswers(def, { q1: 6, q1_txt: 'viel zu lang', q2: 2.5 })).toMatchObject({ q1: 'invalid', q1_txt: 'too_long', q2: 'invalid' });
+  });
+
+  it('rejects gaps in slider values, bad anchors, clashing remark ids and long labels', () => {
+    const broken = structuredClone(def) as unknown as Record<string, any>;
+    broken.scales.s.options[2].value = 7;
+    broken.sections[0].items[0].anchors = { min: 'x' };
+    broken.sections[0].items[1].comment.id = 'q1';
+    broken.sections[0].label = 'VIIIIIIII';
+    const errors = validateDefinition(broken);
+    expect(errors.some((e) => e.includes('consecutive'))).toBe(true);
+    expect(errors.some((e) => e.includes('anchors'))).toBe(true);
+    expect(errors.some((e) => e.includes('duplicated'))).toBe(true);
+    expect(errors.some((e) => e.includes('label must be'))).toBe(true);
+  });
+
+  it('accepts the Nürnberg survey', () => {
+    const file = new URL('../../../surveys/d2puls-nuernberg/survey.json', import.meta.url);
+    if (!fs.existsSync(file)) return;
+    const nbg = JSON.parse(fs.readFileSync(file, 'utf8')) as SurveyDefinition;
+    expect(validateDefinition(nbg)).toEqual([]);
+    expect(fieldsOf(nbg)).toHaveLength(290);
+  });
+});

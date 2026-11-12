@@ -24,6 +24,10 @@
   --c-warn-bg: #fff6db;
   --c-done-bg: #e8f5ec;
   --c-focus: #2563eb;
+  /* Slider track: worse (low) end to better (high) end, deliberately muted. */
+  --c-scale-low: #e9a9a1;
+  --c-scale-mid: #eedc9a;
+  --c-scale-high: #9fd3a8;
   --font-body: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-heading: var(--font-body);
   --radius: 6px;
@@ -607,4 +611,212 @@ textarea {
 
 .organiser-link a {
   color: var(--c-muted);
+}
+
+/* ---- slider scale ---- */
+.slider {
+  --thumb: 30px;
+  margin-top: 4px;
+}
+
+.slider-ends {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.85rem;
+  color: var(--c-muted);
+  margin-bottom: 4px;
+}
+
+.slider-end b {
+  color: var(--c-text);
+}
+
+.slider-end-max {
+  text-align: right;
+}
+
+.slider-input {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+
+.slider-input::-webkit-slider-runnable-track {
+  height: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--c-control-border);
+  background: linear-gradient(to right, var(--c-scale-low), var(--c-scale-mid), var(--c-scale-high));
+}
+
+.slider-input::-moz-range-track {
+  height: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--c-control-border);
+  background: linear-gradient(to right, var(--c-scale-low), var(--c-scale-mid), var(--c-scale-high));
+}
+
+.slider-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc((12px - var(--thumb)) / 2 - 1px);
+  border-radius: 50%;
+  background: var(--c-primary);
+  border: 3px solid var(--c-surface);
+  box-shadow: 0 0 0 1px var(--c-primary), 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+.slider-input::-moz-range-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  border-radius: 50%;
+  background: var(--c-primary);
+  border: 3px solid var(--c-surface);
+  box-shadow: 0 0 0 1px var(--c-primary), 0 1px 3px rgb(0 0 0 / 0.3);
+}
+
+/* No answer yet (or "not observed"): no thumb, faded track. */
+.slider.is-unrated .slider-input::-webkit-slider-thumb {
+  opacity: 0;
+}
+
+.slider.is-unrated .slider-input::-moz-range-thumb {
+  opacity: 0;
+}
+
+.slider.is-unrated .slider-input::-webkit-slider-runnable-track {
+  opacity: 0.55;
+}
+
+.slider.is-unrated .slider-input::-moz-range-track {
+  opacity: 0.55;
+}
+
+.slider-input:focus-visible {
+  outline: 3px solid var(--c-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+/* Tick numbers sit under their track positions: the first and last are half a thumb in. */
+.slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 calc(var(--thumb) / 2 - 18px);
+}
+
+.slider-tick {
+  width: 36px;
+  min-height: 36px;
+  border: 0;
+  background: none;
+  font-weight: 700;
+  color: var(--c-muted);
+  cursor: pointer;
+  border-radius: var(--radius);
+  touch-action: manipulation;
+}
+
+.slider-tick.is-selected {
+  background: var(--c-primary);
+  color: var(--c-primary-fg);
+}
+
+.slider-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.slider-value {
+  font-size: 0.9rem;
+  color: var(--c-muted);
+}
+
+.slider.is-rated .slider-value {
+  color: var(--c-text);
+  font-weight: 600;
+}
+
+.slider-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+}
+
+.slider-na {
+  border: 1px dashed var(--c-control-border);
+  background: var(--c-surface);
+  color: var(--c-muted);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  min-height: 36px;
+  cursor: pointer;
+}
+
+.slider-na.is-selected {
+  background: var(--c-primary);
+  border: 1px solid var(--c-primary);
+  color: var(--c-primary-fg);
+}
+
+.slider-clear {
+  font-size: 0.85rem;
+}
+
+/* ---- remark under an item ---- */
+.comment-toggle {
+  margin-top: 10px;
+  padding-left: 0;
+  font-size: 0.9rem;
+}
+
+.comment-field {
+  margin-top: 12px;
+}
+
+.comment-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+/* ---- jump between sections ---- */
+.section-jump {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  font-size: 0.9rem;
+}
+
+.section-jump-label {
+  color: var(--c-muted);
+  white-space: nowrap;
+}
+
+.section-jump select {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  font: inherit;
+  font-size: 0.9rem;
+  border: 1px solid var(--c-control-border);
+  border-radius: var(--radius);
+  background: var(--c-surface);
+  color: var(--c-text);
+  padding: 4px 8px;
 }

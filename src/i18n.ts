@@ -7,6 +7,10 @@ export interface Strings {
   toReview: string;
   submit: string;
   sectionOf: (i: number, n: number) => string;
+  jumpTo: string;
+  notRated: string;
+  ratedAs: (v: number) => string;
+  clearRating: string;
   requiredMissing: string;
   required: string;
   optional: string;
@@ -62,6 +66,10 @@ const de: Strings = {
   toReview: 'Zur Übersicht',
   submit: 'Antworten absenden',
   sectionOf: (i, n) => `Abschnitt ${i} von ${n}`,
+  jumpTo: 'Springen zu',
+  notRated: 'Noch nicht bewertet – Regler antippen oder ziehen',
+  ratedAs: (v) => `Bewertung: ${v}`,
+  clearRating: 'Bewertung entfernen',
   requiredMissing: 'Bitte alle Pflichtfragen dieses Abschnitts beantworten.',
   required: 'Pflichtfrage',
   optional: 'optional',
@@ -118,6 +126,10 @@ const en: Strings = {
   toReview: 'Review',
   submit: 'Submit answers',
   sectionOf: (i, n) => `Section ${i} of ${n}`,
+  jumpTo: 'Go to',
+  notRated: 'Not rated yet – tap or drag the slider',
+  ratedAs: (v) => `Rating: ${v}`,
+  clearRating: 'Clear rating',
   requiredMissing: 'Please answer all required questions in this section.',
   required: 'Required',
   optional: 'optional',

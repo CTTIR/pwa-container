@@ -562,7 +562,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
       const problems = sectionProblems(d, current, live.current.answers);
       if (problems.length > 0) {
         setMissing(new Set(problems));
-        const firstItem = fieldsOf(d).find((f) => f.key === problems[0])?.item.id;
+        const bad = fieldsOf(d).find((f) => f.key === problems[0]);
+        const firstItem = bad?.parent ?? bad?.item.id;
         const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
         document.getElementById(`item-${firstItem}`)?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
         return;
@@ -804,7 +805,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
             const given = fields.filter((f) => isAnswered(answers[f.key])).length;
             return (
               <li key={s.id} className="review-entry">
-                <span className="review-num">{i + 1}</span>
+                <span className="review-num">{s.label ?? i + 1}</span>
                 <span className="review-title">{s.title}</span>
                 <span className="review-count">{given}/{fields.length}</span>
                 <button className="btn btn-link review-edit" onClick={() => goTo(i)}>{t.edit}</button>
@@ -839,8 +840,32 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   return (
     <Shell {...shellProps}>
       <Progress current={current + 1} total={sections.length} label={t.sectionOf(current + 1, sections.length)} />
+      {def.sectionNav && (
+        <label className="section-jump">
+          <span className="section-jump-label">{t.jumpTo}</span>
+          <select
+            value={current}
+            onChange={(e) => {
+              const target = Number(e.target.value);
+              setNotice(null);
+              goTo(target);
+            }}
+          >
+            {sections.map((s, i) => {
+              const fields = fieldsOf(def).filter((f) => f.sectionId === s.id);
+              const given = fields.filter((f) => isAnswered(answers[f.key])).length;
+              return (
+                <option key={s.id} value={i}>
+                  {s.label ?? i + 1}. {s.title} ({given}/{fields.length})
+                </option>
+              );
+            })}
+            <option value={sections.length}>{t.reviewTitle}</option>
+          </select>
+        </label>
+      )}
       <h1 className="section-title" id={HEADING_ID} tabIndex={-1}>
-        <span className="section-num">{current + 1}</span>
+        <span className="section-num">{section.label ?? current + 1}</span>
         <span>{section.title}</span>
       </h1>
       {section.description && (
