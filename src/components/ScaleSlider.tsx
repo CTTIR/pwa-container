@@ -30,9 +30,17 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
   const position = rated ? (value as number) : Math.round((min + max) / 2);
   const optionLabel = (v: number) => scale.options.find((o) => o.value === v)?.label ?? '';
   const pick = (v: number) => onChange(Math.min(max, Math.max(min, v)));
-  // A tap on the resting thumb of an unrated slider fires no input event: take the value on release.
-  const settle = () => {
-    if (!rated && input.current) pick(Number(input.current.value));
+  // Take the value under the finger on release: a tap on the resting thumb of an unrated slider
+  // fires no input event, and iOS Safari does not move the thumb on a tap on the track at all.
+  const settle = (clientX: number) => {
+    const el = input.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const thumb = parseFloat(getComputedStyle(el).getPropertyValue('--thumb')) || 30;
+    const span = r.width - thumb;
+    if (span <= 0) return;
+    const frac = Math.min(1, Math.max(0, (clientX - r.left - thumb / 2) / span));
+    pick(Math.round(min + frac * (max - min)));
   };
   const name = stripMarkers(label);
   return (
@@ -55,9 +63,9 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
         aria-invalid={invalid || undefined}
         aria-describedby={describedBy || undefined}
         onChange={(e) => pick(Number(e.target.value))}
-        onPointerUp={settle}
+        onPointerUp={(e) => settle(e.clientX)}
         onKeyUp={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') settle();
+          if (!rated && (e.key === 'Enter' || e.key === ' ')) pick(position);
         }}
       />
       <div className="slider-ticks" aria-hidden="true">

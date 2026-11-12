@@ -67,7 +67,7 @@ const de: Strings = {
   submit: 'Antworten absenden',
   sectionOf: (i, n) => `Abschnitt ${i} von ${n}`,
   jumpTo: 'Springen zu',
-  notRated: 'Noch nicht bewertet – Regler antippen oder ziehen',
+  notRated: 'Noch nicht bewertet – auf die Skala tippen oder ziehen',
   ratedAs: (v) => `Bewertung: ${v}`,
   clearRating: 'Bewertung entfernen',
   requiredMissing: 'Bitte alle Pflichtfragen dieses Abschnitts beantworten.',

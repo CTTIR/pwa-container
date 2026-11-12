@@ -19,6 +19,11 @@ function scaleEnds(scale: Scale): ScaleAnchors {
   return { min: scale.options[0].label, max: scale.options[scale.options.length - 1].label };
 }
 
+/** Marking optional items only helps when some items are required. */
+function anyRequired(def: SurveyDefinition): boolean {
+  return def.sections.some((s) => s.items.some((i) => i.required === true));
+}
+
 const errorId = (key: string) => `err-${key}`;
 
 /** Space-separated ids for aria-describedby, or undefined when there are none. */
@@ -43,7 +48,7 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
     <section className={`item-card${invalid ? ' is-invalid' : ''}`} aria-labelledby={headingId} id={`item-${item.id}`}>
       <h2 className="item-text" id={headingId}>
         <Inline text={item.text} />
-        {!item.required && <span className="item-optional"> ({t.optional})</span>}
+        {!item.required && anyRequired(def) && <span className="item-optional"> ({t.optional})</span>}
       </h2>
       {item.hint && <p className="item-hint" id={hintId}>{item.hint}</p>}
       {item.type === 'scale' && (
@@ -155,7 +160,7 @@ function Comment({
   }
   return (
     <div className="comment-field">
-      <div className="comment-label">{label} <span className="item-optional">({t.optional})</span></div>
+      <div className="comment-label">{label}</div>
       <TextField
         item={item}
         value={value}
