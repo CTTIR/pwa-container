@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { AnswerValue, Answers, Item, Scale, ScaleAnchors, SurveyDefinition } from '../../shared/schema.ts';
-import { commentItem, DEFAULT_TEXT_MAX } from '../../shared/schema.ts';
+import { commentItem, DEFAULT_TEXT_MAX, photoItem } from '../../shared/schema.ts';
+import { PhotoField } from './PhotoField.tsx';
 import type { Strings } from '../i18n.ts';
 import { Inline, stripMarkers } from './RichText.tsx';
 import { radioKeyDown, ScaleButtons } from './ScaleButtons.tsx';
@@ -77,7 +78,23 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
             />
           )}
           {isMissing && <FieldError fieldKey={item.id} t={t} />}
-          {item.comment && <Comment item={commentItem(item)} label={item.comment.label} answers={answers} missing={missing} onAnswer={onAnswer} t={t} />}
+          {(item.comment || item.photos) && (
+            <div className="item-extras">
+              {item.comment && <Comment item={commentItem(item)} label={item.comment.label} answers={answers} missing={missing} onAnswer={onAnswer} t={t} />}
+              {item.photos && (
+                <PhotoField
+                  surveyId={def.id}
+                  fieldKey={photoItem(item).id}
+                  max={item.photos.max}
+                  label={label}
+                  value={answers[photoItem(item).id]}
+                  onChange={(v) => onAnswer(photoItem(item).id, v)}
+                  t={t}
+                  compact
+                />
+              )}
+            </div>
+          )}
         </>
       )}
       {item.type === 'matrix' &&
@@ -113,6 +130,9 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
           />
           {isMissing && <FieldError fieldKey={item.id} t={t} />}
         </>
+      )}
+      {item.type === 'photo' && (
+        <PhotoField surveyId={def.id} fieldKey={item.id} max={item.max} label={label} value={answers[item.id]} onChange={(v) => onAnswer(item.id, v)} t={t} />
       )}
       {item.type === 'choice' && (
         <>

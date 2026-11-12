@@ -115,6 +115,38 @@ describe('slider scales, item remarks and section labels', () => {
     if (!fs.existsSync(file)) return;
     const nbg = JSON.parse(fs.readFileSync(file, 'utf8')) as SurveyDefinition;
     expect(validateDefinition(nbg)).toEqual([]);
-    expect(fieldsOf(nbg)).toHaveLength(290);
+    expect(fieldsOf(nbg)).toHaveLength(424);
+    expect(nbg.sections[0].items.filter((i) => i.required).map((i) => i.id)).toEqual(['beobachter', 'erfassung']);
+  });
+});
+
+describe('continuous sliders and photo fields', () => {
+  const def = {
+    id: 'photo-schema',
+    version: 1,
+    locale: 'de',
+    title: 'x',
+    intro: { paragraphs: [] },
+    thanks: { paragraphs: [] },
+    scales: { s: { display: 'slider', step: 0.1, options: [0, 1, 2, 3, 4, 5].map((v) => ({ value: v, label: `L${v}` })) } },
+    sections: [{ id: 'B', title: 'B', items: [{ id: 'q1', type: 'scale', scale: 's', text: 'Q', photos: {} }, { id: 'p', type: 'photo', text: 'Bilder', max: 1 }] }],
+  } as unknown as SurveyDefinition;
+
+  it('adds a photo field and checks values', () => {
+    expect(validateDefinition(def)).toEqual([]);
+    expect(fieldsOf(def).map((f) => f.key)).toEqual(['q1', 'q1_foto', 'p']);
+    const id = 'f'.repeat(32);
+    expect(validateAnswers(def, { q1: 0.1, q1_foto: [id], p: [id.replace(/f/g, 'e')] })).toEqual({});
+    expect(validateAnswers(def, { q1: 5.01, q1_foto: ['../x'], p: [id, id.replace(/f/g, '0')] })).toMatchObject({ q1: 'invalid', q1_foto: 'invalid', p: 'too_many' });
+    expect(validateAnswers(def, { q1_foto: [id, id] })).toMatchObject({ q1_foto: 'invalid' });
+  });
+
+  it('rejects a step that does not divide the unit or a step on buttons', () => {
+    const bad = structuredClone(def) as unknown as Record<string, any>;
+    bad.scales.s.step = 0.3;
+    expect(validateDefinition(bad).some((e) => e.includes('step must divide'))).toBe(true);
+    bad.scales.s.step = 0.5;
+    bad.scales.s.display = 'buttons';
+    expect(validateDefinition(bad).some((e) => e.includes('needs display'))).toBe(true);
   });
 });

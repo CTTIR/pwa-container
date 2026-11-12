@@ -762,6 +762,12 @@ export class Store {
       .map((r) => ({ surveyVersion: r.v, courseId: r.c, course: r.c ? (labels.get(r.c) ?? null) : null, answers: JSON.parse(r.a) as Answers }));
   }
 
+  /** Folder of an app's databases (also holds its photos), or null for an in-memory store. */
+  appFolder(appId: string): string | null {
+    if (!this.dataDir || !APP_DB_ID.test(appId)) return null;
+    return path.join(this.dataDir, 'db', appId);
+  }
+
   /** Whether an app already has its own database (without creating one). */
   hasDatabase(appId: string): boolean {
     if (this.dbs.has(appId)) return true;

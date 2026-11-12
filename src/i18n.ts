@@ -9,8 +9,17 @@ export interface Strings {
   sectionOf: (i: number, n: number) => string;
   jumpTo: string;
   notRated: string;
-  ratedAs: (v: number) => string;
+  ratedAs: (v: string) => string;
   clearRating: string;
+  photos: string;
+  photoAdd: string;
+  photoMore: string;
+  photoBusy: string;
+  photoN: (n: number) => string;
+  photoRemove: (n: number) => string;
+  photoLimit: (n: number) => string;
+  photoFailed: string;
+  photoUnavailable: string;
   requiredMissing: string;
   required: string;
   optional: string;
@@ -70,6 +79,15 @@ const de: Strings = {
   notRated: 'Noch nicht bewertet – auf die Skala tippen oder ziehen',
   ratedAs: (v) => `Bewertung: ${v}`,
   clearRating: 'Bewertung entfernen',
+  photos: 'Fotos',
+  photoAdd: '+ Foto',
+  photoMore: '+ weiteres Foto',
+  photoBusy: 'Foto wird vorbereitet …',
+  photoN: (n) => `Foto ${n}`,
+  photoRemove: (n) => `Foto ${n} entfernen`,
+  photoLimit: (n) => `Höchstens ${n} Fotos je Frage.`,
+  photoFailed: 'Dieses Bild konnte nicht gelesen werden. Bitte ein Foto im JPEG- oder PNG-Format wählen.',
+  photoUnavailable: 'Auf diesem Gerät können keine Fotos zwischengespeichert werden (z. B. im privaten Modus).',
   requiredMissing: 'Bitte alle Pflichtfragen dieses Abschnitts beantworten.',
   required: 'Pflichtfrage',
   optional: 'optional',
@@ -130,6 +148,15 @@ const en: Strings = {
   notRated: 'Not rated yet – tap or drag the slider',
   ratedAs: (v) => `Rating: ${v}`,
   clearRating: 'Clear rating',
+  photos: 'Photos',
+  photoAdd: '+ Photo',
+  photoMore: '+ another photo',
+  photoBusy: 'Preparing photo …',
+  photoN: (n) => `Photo ${n}`,
+  photoRemove: (n) => `Remove photo ${n}`,
+  photoLimit: (n) => `At most ${n} photos per question.`,
+  photoFailed: 'This image could not be read. Please choose a JPEG or PNG photo.',
+  photoUnavailable: 'Photos cannot be kept on this device (e.g. in private mode).',
   requiredMissing: 'Please answer all required questions in this section.',
   required: 'Required',
   optional: 'optional',

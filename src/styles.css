@@ -820,3 +820,126 @@ textarea {
   color: var(--c-text);
   padding: 4px 8px;
 }
+
+/* Tick marks under the track at every marked value (continuous sliders: the anchors). */
+.slider-tick {
+  position: relative;
+  padding-top: 8px;
+}
+
+.slider-tick::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 2px;
+  height: 8px;
+  margin-left: -1px;
+  background: var(--c-control-border);
+  border-radius: 1px;
+}
+
+/* ---- remark and photos under an item ---- */
+.item-extras {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0 18px;
+  margin-top: 6px;
+}
+
+.item-extras > .comment-field,
+.item-extras > .photo-field:not(.is-compact) {
+  flex: 1 1 100%;
+}
+
+.item-extras .comment-toggle {
+  margin-top: 4px;
+}
+
+.photo-field {
+  margin-top: 4px;
+}
+
+.photo-field:not(.is-compact) {
+  margin-top: 12px;
+}
+
+.photo-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.photo-input:focus-visible + .photo-add {
+  outline: 3px solid var(--c-focus);
+  outline-offset: 2px;
+}
+
+.photo-add {
+  display: inline-block;
+  padding-left: 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.photo-add.is-busy {
+  color: var(--c-muted);
+  cursor: progress;
+}
+
+.photo-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.photo-thumb {
+  position: relative;
+  width: 88px;
+  height: 88px;
+}
+
+.photo-thumb img,
+.photo-missing {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: var(--radius);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface-muted);
+}
+
+.photo-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  color: var(--c-muted);
+}
+
+.photo-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid var(--c-surface);
+  background: var(--c-text);
+  color: var(--c-surface);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.photo-note {
+  font-size: 0.85rem;
+  color: var(--c-muted);
+}

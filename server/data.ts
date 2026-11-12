@@ -14,7 +14,7 @@ export interface RawRow {
 export interface CodebookEntry {
   key: string;
   /** scale, matrix, choice, text; "unknown" for keys of older versions that are no longer asked. */
-  type: 'scale' | 'matrix' | 'choice' | 'text' | 'unknown';
+  type: 'scale' | 'matrix' | 'choice' | 'text' | 'photo' | 'unknown';
   section: string | null;
   text: string | null;
   column: string | null;
@@ -265,15 +265,17 @@ const label = (e: CodebookEntry): RAttr[] => {
   return text ? [['label', str([text])]] : [];
 };
 
-/** One answer column as an R vector: ratings as integers (not applicable = NA) with value labels, single choices as factors. */
+/** One answer column as an R vector: ratings as integers or doubles (not applicable = NA) with value labels, single choices as factors. */
 function rColumn(e: CodebookEntry, values: (AnswerValue | undefined)[]): RValue {
   if (e.type === 'scale' || e.type === 'matrix') {
-    const ints = values.map((v) => (typeof v === 'number' && Number.isInteger(v) ? v : null));
+    // Continuous sliders give decimals: then the column (and its value labels) is a double.
+    const real = values.some((v) => typeof v === 'number' && !Number.isInteger(v));
+    const nums = values.map((v) => (typeof v === 'number' && (real || Number.isInteger(v)) ? v : null));
     const attrs = label(e);
     if (e.values?.length) {
-      attrs.push(['labels', { kind: 'int', values: e.values.map((x) => x.value), attrs: [['names', str(e.values.map((x) => x.label))]] }]);
+      attrs.push(['labels', { kind: real ? 'real' : 'int', values: e.values.map((x) => x.value), attrs: [['names', str(e.values.map((x) => x.label))]] }]);
     }
-    return { kind: 'int', values: ints, attrs };
+    return { kind: real ? 'real' : 'int', values: nums, attrs };
   }
   if (e.type === 'choice' && !e.multiple) {
     const levels = [...(e.options ?? [])];

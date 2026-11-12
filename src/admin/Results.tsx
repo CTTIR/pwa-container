@@ -141,6 +141,8 @@ export function Results({ surveyId }: { surveyId: string }) {
   const ratingFields = new Map<string, FieldInfo[]>();
   const textFields: FieldInfo[] = [];
   for (const f of fields) {
+    // Photos are only in the "Datenbank" section and the photo download, never beside ratings.
+    if (f.type === 'photo') continue;
     if (f.type === 'text') {
       textFields.push(f);
       continue;

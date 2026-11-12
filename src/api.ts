@@ -9,7 +9,7 @@ export interface SurveyResponse {
 
 /** Request time limits. A request that runs out of time counts as "offline". */
 const DEFINITION_TIMEOUT_MS = 15_000;
-const SUBMIT_TIMEOUT_MS = 20_000;
+const SUBMIT_TIMEOUT_MS = 45_000;
 const CODE_TIMEOUT_MS = 20_000;
 
 /** AbortSignal.timeout where available (Safari 16+), otherwise an AbortController with a timer. */
@@ -66,6 +66,8 @@ export type SubmitResult =
   | { kind: 'version_changed'; version: number | null }
   | { kind: 'invalid' }
   | { kind: 'notice_not_confirmed' }
+  /** The server lacks photos the answers refer to: upload them (again) and resend. */
+  | { kind: 'photo_missing'; photos: string[] }
   | { kind: 'error' };
 
 export type CodeResult =
@@ -145,10 +147,15 @@ export async function submitAnswers(id: string, submissionId: string, surveyVers
     return { kind: 'offline' };
   }
   if (res.status === 409 || res.status === 422) {
-    const { error, version } = await errorOf(res);
+    const body = await errorOf(res);
+    const { error, version } = body;
     switch (error) {
       case 'version_changed':
         return { kind: 'version_changed', version: typeof version === 'number' ? version : null };
+      case 'photo_missing': {
+        const photos = (body as { photos?: unknown }).photos;
+        return { kind: 'photo_missing', photos: Array.isArray(photos) ? photos.filter((p): p is string => typeof p === 'string') : [] };
+      }
       case 'closed':
       case 'not_yet_open':
       case 'full':
@@ -165,4 +172,40 @@ export async function submitAnswers(id: string, submissionId: string, surveyVers
   // Proxy or server trouble, time limit, rate limit: keep the answers and retry later.
   if (res.status >= 500 || res.status === 429 || res.status === 408) return { kind: 'offline' };
   return { kind: 'error' };
+}
+
+export type PhotoUploadResult = { kind: 'stored' } | { kind: 'offline' } | { kind: 'closed' | 'not_yet_open' | 'full' } | { kind: 'invalid' };
+
+const PHOTO_TIMEOUT_MS = 90_000;
+
+/** Sends one photo before the answers that refer to it. Resends of a stored photo succeed. */
+export async function uploadPhoto(surveyId: string, photoId: string, blob: Blob): Promise<PhotoUploadResult> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/surveys/${encodeURIComponent(surveyId)}/photos/${photoId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg', Accept: 'application/json' },
+      body: blob,
+      cache: 'no-store',
+      signal: timeoutSignal(PHOTO_TIMEOUT_MS),
+    });
+  } catch {
+    return { kind: 'offline' };
+  }
+  if (res.status === 201 || res.status === 200) {
+    try {
+      const body = (await res.json()) as { status?: string };
+      if (body.status === 'stored' || body.status === 'exists') return { kind: 'stored' };
+    } catch {
+      /* fall through */
+    }
+    return { kind: 'offline' };
+  }
+  if (res.status === 409) {
+    const { error } = await errorOf(res);
+    if (error === 'closed' || error === 'not_yet_open' || error === 'full') return { kind: error };
+    return { kind: 'offline' };
+  }
+  if (res.status === 422 || res.status === 413 || res.status === 415 || res.status === 400) return { kind: 'invalid' };
+  return { kind: 'offline' };
 }

@@ -7,7 +7,7 @@ import { adminFetch } from './http.ts';
 /** One entry of the codebook the server sends with the data. */
 export interface CodebookEntry {
   key: string;
-  type: 'scale' | 'matrix' | 'choice' | 'text' | 'unknown';
+  type: 'scale' | 'matrix' | 'choice' | 'text' | 'photo' | 'unknown';
   section: string | null;
   text: string | null;
   column: string | null;
@@ -39,6 +39,22 @@ const NO_COURSE = 'none';
 const PAGE = 25;
 
 /** `params` with value undefined are left out; an empty string is an explicitly empty selection. */
+const photoUrl = (surveyId: string, id: string) => `/admin/api/results/${encodeURIComponent(surveyId)}/photos/${id}.jpg`;
+
+/** Small previews of the photos of one answer; each opens the full photo. */
+function PhotoLinks({ surveyId, value }: { surveyId: string; value: AnswerValue | undefined }) {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  return (
+    <span className="data-photos">
+      {value.map((id) => (
+        <a key={id} href={photoUrl(surveyId, id)} target="_blank" rel="noopener" title={`${id}.jpg`}>
+          <img src={photoUrl(surveyId, id)} alt={`Foto ${id.slice(0, 6)}`} loading="lazy" />
+        </a>
+      ))}
+    </span>
+  );
+}
+
 const dataUrl = (surveyId: string, params: Record<string, string | undefined>) => {
   const q = new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => e[1] !== undefined));
   return `/admin/api/results/${encodeURIComponent(surveyId)}/data?${q.toString()}`;
@@ -283,6 +299,11 @@ function DataView({ surveyId }: { surveyId: string }) {
         <DownloadLink disabled={nothing} href={dataUrl(surveyId, { ...params, format: 'json-file' })}>
           JSON
         </DownloadLink>
+        {data.codebook.some((e) => e.type === 'photo') && (
+          <a className="btn btn-secondary admin-link" href={`/admin/api/results/${encodeURIComponent(surveyId)}/photos`} download>
+            Fotos (ZIP)
+          </a>
+        )}
         <a className="btn btn-secondary admin-link" href={dataUrl(surveyId, { ...params, format: 'codebook.csv', sep })} download>
           Codebuch (CSV)
         </a>
@@ -343,7 +364,7 @@ function DataView({ surveyId }: { surveyId: string }) {
                     <td>{r.course ?? '–'}</td>
                     {chosenFields.map((e) => (
                       <td key={e.key} className={e.type === 'text' ? 'data-text' : undefined}>
-                        {cellText(r.answers[e.key])}
+                        {e.type === 'photo' ? <PhotoLinks surveyId={surveyId} value={r.answers[e.key]} /> : cellText(r.answers[e.key])}
                       </td>
                     ))}
                   </tr>
@@ -366,13 +387,13 @@ function DataView({ surveyId }: { surveyId: string }) {
           )}
         </>
       ) : (
-        chosenFields.map((e) => <FieldChart key={e.key} entry={e} rows={rows} byCourse={byCourse} />)
+        chosenFields.map((e) => <FieldChart key={e.key} entry={e} rows={rows} byCourse={byCourse} surveyId={surveyId} />)
       )}
     </>
   );
 }
 
-function FieldChart({ entry, rows, byCourse }: { entry: CodebookEntry; rows: DataRow[]; byCourse: boolean }) {
+function FieldChart({ entry, rows, byCourse, surveyId }: { entry: CodebookEntry; rows: DataRow[]; byCourse: boolean; surveyId: string }) {
   const values = rows.map((r) => r.answers[entry.key]);
   const given = values.filter((v): v is AnswerValue => v !== undefined && v !== '');
   const title = (
@@ -385,7 +406,8 @@ function FieldChart({ entry, rows, byCourse }: { entry: CodebookEntry; rows: Dat
     const nums = given.filter((v): v is number => typeof v === 'number');
     const na = given.length - nums.length;
     const opts = entry.values ?? [...new Set(nums)].sort((a, b) => a - b).map((v) => ({ value: v, label: String(v) }));
-    const counts = opts.map((o) => ({ ...o, n: nums.filter((x) => x === o.value).length }));
+    // Values of a continuous slider count towards the nearest marked option.
+    const counts = opts.map((o) => ({ ...o, n: nums.filter((x) => (Number.isInteger(x) ? x : Math.round(x)) === o.value).length }));
     const max = Math.max(1, ...counts.map((c) => c.n), na);
     const groups = byCourse ? [...new Set(rows.map((r) => r.course ?? 'ohne Kurs'))].sort() : [];
     return (
@@ -432,6 +454,15 @@ function FieldChart({ entry, rows, byCourse }: { entry: CodebookEntry; rows: Dat
             </tbody>
           </table>
         )}
+      </div>
+    );
+  }
+  if (entry.type === 'photo') {
+    const ids = given.flatMap((v) => (Array.isArray(v) ? v : []));
+    return (
+      <div className="item-card">
+        {title}
+        {ids.length === 0 ? <p className="status-text">Keine Fotos.</p> : <PhotoLinks surveyId={surveyId} value={ids} />}
       </div>
     );
   }

@@ -27,9 +27,15 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
   const rated = typeof value === 'number';
   const isNa = na !== undefined && value === na.value;
   const input = useRef<HTMLInputElement>(null);
+  const step = scale.step ?? 1;
+  const decimals = Math.max(0, Math.ceil(-Math.log10(step) - 1e-9));
   const position = rated ? (value as number) : Math.round((min + max) / 2);
   const optionLabel = (v: number) => scale.options.find((o) => o.value === v)?.label ?? '';
-  const pick = (v: number) => onChange(Math.min(max, Math.max(min, v)));
+  const snap = (v: number) => Number((Math.round((v - min) / step) * step + min).toFixed(decimals));
+  const pick = (v: number) => onChange(snap(Math.min(max, Math.max(min, v))));
+  const show = (v: number) => v.toLocaleString(document.documentElement.lang || 'de', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  // The words of the nearest marked value describe a continuous rating.
+  const describe = (v: number) => `${show(v)} – ${stripMarkers(optionLabel(Math.round(v)))}`;
   // Take the value under the finger on release: a tap on the resting thumb of an unrated slider
   // fires no input event, and iOS Safari does not move the thumb on a tap on the track at all.
   const settle = (clientX: number) => {
@@ -40,7 +46,7 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
     const span = r.width - thumb;
     if (span <= 0) return;
     const frac = Math.min(1, Math.max(0, (clientX - r.left - thumb / 2) / span));
-    pick(Math.round(min + frac * (max - min)));
+    pick(min + frac * (max - min));
   };
   const name = stripMarkers(label);
   return (
@@ -55,10 +61,10 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
         className="slider-input"
         min={min}
         max={max}
-        step={1}
+        step={step}
         value={position}
         aria-label={`${name} (${min} = ${stripMarkers(anchors.min)}, ${max} = ${stripMarkers(anchors.max)})`}
-        aria-valuetext={rated ? `${value} – ${stripMarkers(optionLabel(value as number))}` : isNa ? stripMarkers(na!.label) : t.notRated}
+        aria-valuetext={rated ? describe(value as number) : isNa ? stripMarkers(na!.label) : t.notRated}
         aria-required={required || undefined}
         aria-invalid={invalid || undefined}
         aria-describedby={describedBy || undefined}
@@ -74,7 +80,7 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
             key={o.value}
             type="button"
             tabIndex={-1}
-            className={`slider-tick${value === o.value ? ' is-selected' : ''}`}
+            className={`slider-tick${rated && value === o.value ? ' is-selected' : ''}`}
             title={stripMarkers(o.label)}
             onClick={() => pick(o.value)}
           >
@@ -84,7 +90,7 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
       </div>
       <div className="slider-foot">
         <span className="slider-value" aria-live="polite">
-          {rated ? t.ratedAs(value as number) : isNa ? stripMarkers(na!.label) : t.notRated}
+          {rated ? t.ratedAs(show(value as number)) : isNa ? stripMarkers(na!.label) : t.notRated}
         </span>
         <span className="slider-actions">
           {na && (

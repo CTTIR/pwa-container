@@ -49,7 +49,15 @@ export interface TextSummary {
   values: string[];
 }
 
-export type FieldSummary = ScaleSummary | ChoiceSummary | TextSummary;
+export type FieldSummary = ScaleSummary | ChoiceSummary | TextSummary | PhotoSummary;
+
+export interface PhotoSummary {
+  kind: 'photo';
+  key: string;
+  answered: number;
+  missing: number;
+  photos: number;
+}
 
 export function fieldInfos(def: SurveyDefinition): FieldInfo[] {
   const titles = new Map(def.sections.map((s) => [s.id, s.title]));
@@ -91,10 +99,14 @@ export function summarize(def: SurveyDefinition, rows: StoredResponse[]): FieldS
         answered: values.length,
         missing,
         notApplicable: na,
-        counts: scale.options.map((o) => ({ value: o.value, label: o.label, count: numbers.filter((n) => n === o.value).length })),
+        // Continuous sliders: each value counts towards the nearest marked option.
+        counts: scale.options.map((o) => ({ value: o.value, label: o.label, count: numbers.filter((n) => (scale.step ? Math.round(n) : n) === o.value).length })),
         mean: numbers.length ? round(numbers.reduce((a, b) => a + b, 0) / numbers.length) : null,
         median: median(numbers),
       };
+    }
+    if (item.type === 'photo') {
+      return { kind: 'photo', key: field.key, answered: values.length, missing, photos: values.reduce<number>((n, v) => n + (Array.isArray(v) ? v.length : 0), 0) };
     }
     if (item.type === 'choice') {
       const flat = values.flatMap((v) => (Array.isArray(v) ? v : [v])).map(String);
@@ -124,10 +136,10 @@ export function textKeys(def: SurveyDefinition): string[] {
     .map((f) => f.key);
 }
 
-/** Column keys for rating exports: all current fields except free texts. */
+/** Column keys for rating exports: all current fields except free texts and photos. */
 export function exportKeys(def: SurveyDefinition): string[] {
   return fieldsOf(def)
-    .filter((f) => f.item.type !== 'text')
+    .filter((f) => f.item.type !== 'text' && f.item.type !== 'photo')
     .map((f) => f.key);
 }
 

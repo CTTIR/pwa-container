@@ -2,7 +2,7 @@ import type { Answers, SurveyDefinition } from '../../shared/schema.ts';
 
 export interface FieldInfo {
   key: string;
-  type: 'scale' | 'matrix' | 'text' | 'choice';
+  type: 'scale' | 'matrix' | 'text' | 'choice' | 'photo';
   sectionId: string;
   sectionTitle: string;
   itemId: string;
@@ -23,7 +23,8 @@ export type FieldSummary =
     }
   | { kind: 'choice'; key: string; answered: number; missing: number; counts: { option: string; count: number }[] }
   /** Free texts arrive already shuffled per question and are never shown beside ratings. */
-  | { kind: 'text'; key: string; answered: number; missing: number; values: string[] };
+  | { kind: 'text'; key: string; answered: number; missing: number; values: string[] }
+  | { kind: 'photo'; key: string; answered: number; missing: number; photos: number };
 
 export type SurveyStatus = 'open' | 'closed' | 'not_yet_open';
 

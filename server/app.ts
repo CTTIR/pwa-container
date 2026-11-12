@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { compactAnswers, formatCode, normalizeCode, validateAnswers, type SurveyDefinition } from '../shared/schema.ts';
+import { compactAnswers, DEFAULT_TEXT_MAX, fieldsOf, formatCode, MAX_PHOTO_BYTES, normalizeCode, PHOTO_ID_PATTERN, photoIdsOf, validateAnswers, type SurveyDefinition } from '../shared/schema.ts';
+import { PhotoStore, streamZip } from './photos.ts';
 import type { AdminAuth } from './auth.ts';
 import { MIN_GROUP, type Store } from './db.ts';
 import { STATIC_LIMITS, validAppId, type AppEntry, type AppRegistry } from './registry.ts';
@@ -26,6 +27,27 @@ export interface AppDeps {
 }
 
 const MAX_BODY = 64 * 1024;
+/** Hard upper bound of one submitted answer set (surveys with many long free texts). */
+const MAX_SUBMIT_BODY = 4 * 1024 * 1024;
+
+/**
+ * Body limit for one answer set of this survey: room for every text field at its maximum length
+ * (UTF-8 and JSON escaping, up to 3 bytes per character) plus the other fields.
+ */
+function submitLimit(def: SurveyDefinition): number {
+  let bytes = 4096;
+  for (const f of fieldsOf(def)) {
+    bytes += 64 + f.key.length;
+    if (f.item.type === 'text') bytes += 3 * (f.item.maxLength ?? DEFAULT_TEXT_MAX);
+    else if (f.item.type === 'photo') bytes += 40 * (f.item.max ?? 10);
+    else if (f.item.type === 'choice') bytes += f.item.options.reduce((a, o) => a + 3 * o.length + 4, 0);
+  }
+  return Math.min(MAX_SUBMIT_BODY, Math.max(MAX_BODY, bytes));
+}
+
+function hasPhotoFields(def: SurveyDefinition): boolean {
+  return fieldsOf(def).some((f) => f.item.type === 'photo');
+}
 const MAX_DEFINITION = 1024 * 1024;
 const MAX_RECORD = 256 * 1024;
 const MAX_RECORDS_PER_APP = 50_000;
@@ -245,6 +267,7 @@ export function createApp(deps: AppDeps) {
   const appDomain = deps.appDomain ?? '';
   const adminHost = deps.adminHost ?? '';
   const scheme = deps.publicScheme ?? 'https';
+  const photos = new PhotoStore((id) => store.appFolder(id));
 
   /** Client address for the admin sign-in limiter only; never stored or logged. */
   let warnedProxy = false;
@@ -296,7 +319,7 @@ export function createApp(deps: AppDeps) {
 
   async function handleSubmit(req: IncomingMessage, res: ServerResponse, app: AppEntry): Promise<void> {
     const def = app.survey!.def;
-    const body = await readJson(req, res, MAX_BODY);
+    const body = await readJson(req, res, submitLimit(def));
     if (!body.ok) return;
     const payload = (body.value ?? {}) as { submissionId?: unknown; surveyVersion?: unknown; answers?: unknown; code?: unknown; noticeConfirmed?: unknown };
     // A resend of an answer that is already stored (its reply got lost) is always a success,
@@ -328,6 +351,12 @@ export function createApp(deps: AppDeps) {
     const problems = validateAnswers(def, payload.answers);
     if (Object.keys(problems).length > 0) {
       sendJson(res, 422, { error: 'invalid', fields: problems, version: def.version });
+      return;
+    }
+    // Photos are uploaded before the answers; the device sends missing ones again.
+    const missingPhotos = photoIdsOf(def, payload.answers as Record<string, never>).filter((id) => !photos.has(def.id, id));
+    if (missingPhotos.length > 0) {
+      sendJson(res, 409, { error: 'photo_missing', photos: missingPhotos });
       return;
     }
     // One normalized code value for every decision below and for storing.
@@ -373,6 +402,54 @@ export function createApp(deps: AppDeps) {
       default:
         return sendJson(res, 422, { error: result });
     }
+  }
+
+  /** One photo of an answer set, sent before the answers. */
+  async function handlePhotoUpload(req: IncomingMessage, res: ServerResponse, app: AppEntry, photoId: string): Promise<void> {
+    const def = app.survey!.def;
+    if (!hasPhotoFields(def)) return sendJson(res, 404, { error: 'no_photos' });
+    if (!PHOTO_ID_PATTERN.test(photoId)) return sendJson(res, 400, { error: 'invalid_photo_id' });
+    const type = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (type !== 'image/jpeg') return sendJson(res, 415, { error: 'jpeg_required' });
+    // A resend of a stored photo is a success even if the survey closed meanwhile.
+    if (photos.has(def.id, photoId)) {
+      req.resume();
+      return sendJson(res, 200, { status: 'exists' });
+    }
+    const status = registry.statusOf(app, now());
+    if (status !== 'open') {
+      req.resume();
+      return sendJson(res, 409, { error: status });
+    }
+    if (!photoBucket(def.id).take()) {
+      req.resume();
+      return sendJson(res, 429, { error: 'busy' });
+    }
+    const body = await readBody(req, MAX_PHOTO_BYTES, 120_000);
+    if (body === 'too_large') return sendJson(res, 413, { error: 'too_large' });
+    if (body === 'aborted') return;
+    const r = photos.put(def.id, photoId, body);
+    if (r === 'invalid') return sendJson(res, 422, { error: 'invalid_photo' });
+    if (r === 'full') return sendJson(res, 409, { error: 'full' });
+    return sendJson(res, r === 'stored' ? 201 : 200, { status: r });
+  }
+
+  const photoBuckets = new Map<string, Bucket>();
+  function photoBucket(surveyId: string): Bucket {
+    let b = photoBuckets.get(surveyId);
+    if (!b) photoBuckets.set(surveyId, (b = new Bucket(300, 300)));
+    return b;
+  }
+
+  /** Photos no stored answer refers to (failed or deleted submissions) are removed. */
+  function sweepPhotos(def: SurveyDefinition): void {
+    if (!photos.ids(def.id).length) return;
+    const referenced = new Set<string>();
+    for (const r of store.rawResponses(def.id)) {
+      for (const v of Object.values(r.answers)) if (Array.isArray(v)) for (const x of v) if (PHOTO_ID_PATTERN.test(x)) referenced.add(x);
+    }
+    const n = photos.sweep(def.id, referenced);
+    if (n) log(`removed ${n} unreferenced photo(s) of ${def.id}`);
   }
 
   const submitBuckets = new Map<string, Bucket>();
@@ -773,6 +850,44 @@ export function createApp(deps: AppDeps) {
         return download(res, `${def.id}_${SURVEY_PDFS[name]}.pdf`, 'application/pdf', pdf);
       }
 
+      if (parts[4] === 'photos' && (parts.length === 5 || parts.length === 6)) {
+        // Photos of this survey's answers: one photo by id, or all as a ZIP archive.
+        if (method !== 'GET') return sendJson(res, 405, { error: 'method_not_allowed' });
+        if (parts.length === 6) {
+          const id = parts[5].replace(/\.jpg$/, '');
+          if (!PHOTO_ID_PATTERN.test(id)) return sendText(res, 404, 'Not found');
+          const data = photos.read(def.id, id);
+          if (!data) return sendText(res, 404, 'Not found');
+          res.writeHead(200, {
+            'Content-Type': 'image/jpeg',
+            'Content-Length': data.length,
+            'Cache-Control': 'private, no-store',
+            'X-Content-Type-Options': 'nosniff',
+            'Content-Disposition': `inline; filename="${id}.jpg"`,
+          });
+          res.end(data);
+          return;
+        }
+        // Named <field>_<photo id>.jpg: the photo id is the value in the data export.
+        const entries: { name: string; load: () => Buffer | null }[] = [];
+        const keys = new Set(fieldsOf(def).filter((f) => f.item.type === 'photo').map((f) => f.key));
+        for (const r of store.rawResponses(def.id)) {
+          for (const [key, v] of Object.entries(r.answers)) {
+            if (!keys.has(key) || !Array.isArray(v)) continue;
+            for (const id of v) if (PHOTO_ID_PATTERN.test(id)) entries.push({ name: `${key}_${id}.jpg`, load: () => photos.read(def.id, id) });
+          }
+        }
+        entries.sort((a, b) => a.name.localeCompare(b.name));
+        log(`photo export of ${def.id} by the ${role} administration`);
+        res.writeHead(200, {
+          'Content-Type': 'application/zip',
+          'Cache-Control': 'private, no-store',
+          'Content-Disposition': `attachment; filename="${def.id}_fotos.zip"`,
+        });
+        await streamZip(res, entries);
+        return;
+      }
+
       if (parts[4] === 'data' && parts.length === 5) {
         // Full data of this one survey (its own database only): single responses with free
         // texts, version and course; filtered by course, version and field; JSON, CSV or RDS.
@@ -920,6 +1035,7 @@ export function createApp(deps: AppDeps) {
             return sendJson(res, 400, { error: 'confirmation does not match the course name' });
           }
           const r = store.deleteCourse(def.id, courseId, withResponses);
+          if (r === 'removed' && withResponses) sweepPhotos(def);
           if (r === 'removed') log(`course of ${def.id} deleted${withResponses ? ' with its responses' : ''}`);
           return r === 'removed' ? sendJson(res, 200, { status: r }) : sendJson(res, 409, { error: 'the course still has responses' });
         }
@@ -1180,6 +1296,7 @@ export function createApp(deps: AppDeps) {
         return;
       }
       const removed = store.purge(app.id);
+      photos.removeAll(app.id);
       registry.reload();
       log(`purged ${removed} response(s) of ${app.id}`);
       sendJson(res, 200, { removed });
@@ -1259,6 +1376,7 @@ export function createApp(deps: AppDeps) {
           return;
         }
         if (parts.length === 4 && parts[3] === 'responses' && method === 'POST') return await handleSubmit(req, res, app);
+        if (parts.length === 5 && parts[3] === 'photos' && method === 'PUT') return await handlePhotoUpload(req, res, app, parts[4]);
         if (parts.length === 4 && parts[3] === 'code' && method === 'POST') return await handleCodeCheck(req, res, app);
         return sendJson(res, 405, { error: 'method_not_allowed' });
       }

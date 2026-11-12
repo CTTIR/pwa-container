@@ -9,7 +9,9 @@ import {
   type Answers,
   type SurveyDefinition,
 } from '../shared/schema.ts';
-import { checkCode, loadSurvey, submitAnswers, type SubmitResult, type SurveyResponse } from './api.ts';
+import { checkCode, loadSurvey, type SubmitResult, type SurveyResponse } from './api.ts';
+import { photoDb, photoIdsIn } from './photos.ts';
+import { sendSubmission } from './send.ts';
 import { ItemCard } from './components/ItemCard.tsx';
 import { Legend } from './components/Legend.tsx';
 import { Inline, Paragraphs } from './components/RichText.tsx';
@@ -157,7 +159,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const flushOthers = async (exceptId?: string) => {
     for (const other of storage.listOutboxes(surveyId)) {
       if (other.submissionId === exceptId) continue;
-      const r = await submitAnswers(surveyId, other.submissionId, other.surveyVersion, other.answers, other.code, other.noticeConfirmed);
+      const r = await sendSubmission(surveyId, other, (o) => storage.saveOutbox(surveyId, o));
       if (r.kind === 'stored') storage.clearOutbox(surveyId, other.submissionId);
     }
   };
@@ -240,7 +242,11 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     if (!quiet) setPhase({ kind: 'sending' });
     let result: SubmitResult;
     try {
-      result = await submitAnswers(surveyId, outbox.submissionId, outbox.surveyVersion, outbox.answers, outbox.code, outbox.noticeConfirmed);
+      result = await sendSubmission(surveyId, outbox, (o) => {
+        outbox = o;
+        if (outboxRef.current?.submissionId === o.submissionId) outboxRef.current = o;
+        storage.saveOutbox(surveyId, o);
+      });
     } finally {
       sendingRef.current = false;
     }
@@ -386,6 +392,7 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   // Load the definition, then restore the device state (pending submission, draft, done).
   const startImpl = async (cancelled: () => boolean) => {
     storage.sweepExpired();
+    void photoDb.sweepExpired();
     const result = await loadSurvey(surveyId);
     if (cancelled()) return;
     if (result.kind === 'not_found') return setPhase({ kind: 'not_found' });
@@ -629,6 +636,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
     if (!window.confirm(t.discardConfirm)) return;
     dropOutbox();
     storage.clearAllDrafts(surveyId);
+    // Photos of other people's pending submissions on this device stay.
+    void photoDb.prune(surveyId, new Set(storage.listOutboxes(surveyId).flatMap((o) => photoIdsIn(o.answers))));
     setKeptAnswers(false);
     if (phase.kind === 'unavailable') {
       setAnswers({});

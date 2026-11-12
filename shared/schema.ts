@@ -17,6 +17,11 @@ export interface Scale {
    * be consecutive integers; every value is marked on the track.
    */
   display?: 'buttons' | 'slider';
+  /**
+   * Slider only: resolution of a continuous slider (e.g. 0.1). Any multiple of `step` between
+   * the first and the last option is a valid answer; the options stay the marked ticks.
+   */
+  step?: number;
 }
 
 /** Words at the low and high end of a scale, e.g. "unklar" … "eindeutig". */
@@ -46,7 +51,29 @@ export interface ScaleItem extends BaseItem {
   /** End words for this item; default: the labels of the scale's first and last option. */
   anchors?: ScaleAnchors;
   comment?: ItemComment;
+  /** Photos for documentation, attached to this item and stored as their own photo field. */
+  photos?: ItemPhotos;
 }
+
+/** Photos attached to a scale item, stored under `<item id>_foto` (default). */
+export interface ItemPhotos {
+  id?: string;
+  /** Most photos per item (1–10, default 3). */
+  max?: number;
+  label?: string;
+}
+
+/** A field holding up to `max` photos; its answer is a list of photo ids. */
+export interface PhotoItem extends BaseItem {
+  type: 'photo';
+  max?: number;
+}
+
+export const DEFAULT_PHOTO_MAX = 3;
+/** Photo ids are random, chosen on the device: 32 lowercase hex characters. */
+export const PHOTO_ID_PATTERN = /^[0-9a-f]{32}$/;
+/** Largest photo the server accepts (the app sends re-encoded JPEGs well below this). */
+export const MAX_PHOTO_BYTES = 3 * 1024 * 1024;
 
 export interface MatrixColumn {
   id: string;
@@ -73,7 +100,7 @@ export interface ChoiceItem extends BaseItem {
   multiple?: boolean;
 }
 
-export type Item = ScaleItem | MatrixItem | TextItem | ChoiceItem;
+export type Item = ScaleItem | MatrixItem | TextItem | ChoiceItem | PhotoItem;
 
 export interface Section {
   id: string;
@@ -159,6 +186,22 @@ export function commentItem(item: ScaleItem): TextItem {
   };
 }
 
+/** The photo item that stores the photos of a scale item. */
+export function photoItem(item: ScaleItem): PhotoItem {
+  const p = item.photos!;
+  return { id: p.id ?? `${item.id}_foto`, type: 'photo', text: `${stripBold(item.text)} – ${p.label ?? 'Fotos'}`, max: p.max };
+}
+
+/** Photo ids referenced anywhere in an answer set. */
+export function photoIdsOf(def: SurveyDefinition, answers: Answers): string[] {
+  const out: string[] = [];
+  for (const f of fieldsOf(def)) {
+    const v = answers[f.key];
+    if (f.item.type === 'photo' && Array.isArray(v)) out.push(...v);
+  }
+  return out;
+}
+
 function stripBold(text: string): string {
   return text.replace(/\*\*/g, '');
 }
@@ -177,6 +220,10 @@ export function fieldsOf(def: SurveyDefinition): Field[] {
         if (item.type === 'scale' && item.comment) {
           const c = commentItem(item);
           out.push({ key: c.id, item: c, sectionId: section.id, parent: item.id });
+        }
+        if (item.type === 'scale' && item.photos) {
+          const p = photoItem(item);
+          out.push({ key: p.id, item: p, sectionId: section.id, parent: item.id });
         }
       }
     }
@@ -274,6 +321,13 @@ export function validateDefinition(raw: unknown): string[] {
           errors.push(`scale ${name}: a slider needs consecutive ascending integer values`);
         }
       }
+      if (scale.step !== undefined) {
+        const st = scale.step as number;
+        if (scale.display !== 'slider') errors.push(`scale ${name}.step needs display "slider"`);
+        else if (typeof st !== 'number' || !(st > 0 && st <= 1) || Math.abs(Math.round(1 / st) * st - 1) > 1e-9) {
+          errors.push(`scale ${name}.step must divide 1 (e.g. 0.1, 0.25, 0.5)`);
+        }
+      }
       if (scale.notApplicable !== undefined) {
         const na = scale.notApplicable;
         if (!isRecord(na) || !isNonEmptyString(na.value) || !isNonEmptyString(na.label)) {
@@ -331,6 +385,19 @@ export function validateDefinition(raw: unknown): string[] {
           if (item.anchors !== undefined && (!isRecord(item.anchors) || !isNonEmptyString(item.anchors.min) || !isNonEmptyString(item.anchors.max))) {
             errors.push(`${w}.anchors needs min and max`);
           }
+          if (item.photos !== undefined) {
+            const ph = item.photos;
+            if (!isRecord(ph)) {
+              errors.push(`${w}.photos must be an object`);
+            } else {
+              if (ph.id !== undefined && (typeof ph.id !== 'string' || !ID_PATTERN.test(ph.id))) errors.push(`${w}.photos.id is invalid`);
+              if (ph.max !== undefined && (!Number.isInteger(ph.max) || (ph.max as number) < 1 || (ph.max as number) > 10)) {
+                errors.push(`${w}.photos.max must be an integer between 1 and 10`);
+              }
+              if (ph.label !== undefined && !isNonEmptyString(ph.label)) errors.push(`${w}.photos.label must be a string`);
+              addKey(typeof ph.id === 'string' ? ph.id : `${item.id}_foto`);
+            }
+          }
           if (item.comment !== undefined) {
             const c = item.comment;
             if (!isRecord(c) || !isNonEmptyString(c.label)) {
@@ -372,8 +439,14 @@ export function validateDefinition(raw: unknown): string[] {
           }
           addKey(item.id);
           break;
+        case 'photo':
+          if (item.max !== undefined && (!Number.isInteger(item.max) || (item.max as number) < 1 || (item.max as number) > 10)) {
+            errors.push(`${w}.max must be an integer between 1 and 10`);
+          }
+          addKey(item.id);
+          break;
         default:
-          errors.push(`${w}.type must be scale, matrix, text or choice`);
+          errors.push(`${w}.type must be scale, matrix, text, choice or photo`);
       }
     }
   }
@@ -381,6 +454,13 @@ export function validateDefinition(raw: unknown): string[] {
 }
 
 function allowedScaleValue(scale: Scale, value: unknown): boolean {
+  if (typeof value === 'number' && scale.step !== undefined) {
+    const lo = scale.options[0].value;
+    const hi = scale.options[scale.options.length - 1].value;
+    if (!Number.isFinite(value) || value < lo || value > hi) return false;
+    const steps = (value - lo) / scale.step;
+    return Math.abs(steps - Math.round(steps)) < 1e-6;
+  }
   if (typeof value === 'number') return scale.options.some((o) => o.value === value);
   if (typeof value === 'string') return scale.notApplicable?.value === value;
   return false;
@@ -406,6 +486,11 @@ export function fieldProblem(def: SurveyDefinition, field: Field, value: AnswerV
     case 'text': {
       if (typeof value !== 'string') return 'invalid';
       return value.length > (item.maxLength ?? DEFAULT_TEXT_MAX) ? 'too_long' : null;
+    }
+    case 'photo': {
+      if (!Array.isArray(value) || !value.every((v) => typeof v === 'string' && PHOTO_ID_PATTERN.test(v))) return 'invalid';
+      if (new Set(value).size !== value.length) return 'invalid';
+      return value.length > (item.max ?? DEFAULT_PHOTO_MAX) ? 'too_many' : null;
     }
     case 'choice': {
       if (item.multiple) {
