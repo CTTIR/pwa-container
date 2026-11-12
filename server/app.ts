@@ -1401,7 +1401,10 @@ export function createApp(deps: AppDeps) {
           return sendJson(res, 200, { app: { id, type: onHost.type } }, 'no-cache');
         }
         // Second entry for organisers: /admin on the survey's own host shows its results and courses.
+        // A gated survey's pages know it only by its alias (see /api/context); its admin API too.
+        const gatedHost = !!onHost.survey?.def.gated;
         if (parts[0] === 'admin') {
+          if (gatedHost && parts[1] === 'api' && parts[2] === 'results' && parts[3] === GATED_ALIAS) parts[3] = onHost.id;
           if (parts[1] === 'api' && parts[2] === 'results' && parts[3] === onHost.id) {
             res.setHeader('Cache-Control', 'no-store');
             return await handleAdminApi(req, res, parts, method);
@@ -1412,7 +1415,6 @@ export function createApp(deps: AppDeps) {
           if (!serveFile(req, res, adminHtml, 'no-store')) sendText(res, 503, 'App not built');
           return;
         }
-        const gatedHost = !!onHost.survey?.def.gated;
         if (parts[0] === 'api' && gatedHost && parts[1] === 'surveys' && parts[2] === GATED_ALIAS) parts[2] = onHost.id;
         if ((parts[0] === 'api' && parts[2] !== onHost.id) || parts[0] === 'a' || parts[0] === 's') {
           return sendText(res, 404, 'Not found');

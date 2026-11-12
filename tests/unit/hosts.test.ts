@@ -134,6 +134,10 @@ describe('subdomains', () => {
     expect(stub.body).not.toContain(def.title);
     // The alias only works on the gated survey's own host.
     expect((await get('feedback.example.org', '/api/surveys/app')).status).toBe(404);
+    // The organiser page on that host reaches the results API by the same alias (after sign-in).
+    expect((await get('obs42.example.org', '/admin/api/results/app/summary')).status).toBe(401);
+    expect((await get('obs42.example.org', '/admin/api/results/app/summary', { Authorization: ADMIN })).status).toBe(200);
+    expect((await get('feedback.example.org', '/admin/api/results/app/summary', { Authorization: ADMIN })).status).toBe(404);
     fs.rmSync(path.join(surveysDir, def.id), { recursive: true, force: true });
     registry.reload();
   });
