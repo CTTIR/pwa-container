@@ -22,15 +22,12 @@ export function reopenBlocked(withCourses: boolean, responses: number, minGroup 
 }
 
 /** Asks before closing or reopening; the text says what happens to answers, courses and QR codes. */
-export function confirmSurveyStatus(title: string, close: boolean, withCourses: boolean, final: boolean, minGroup = MIN_GROUP, live = false): boolean {
+export function confirmSurveyStatus(title: string, close: boolean, withCourses: boolean, final: boolean, minGroup = MIN_GROUP): boolean {
   const text = close
     ? `Umfrage „${title}“ schließen?\n\n` +
       'Danach werden keine Antworten mehr angenommen – auch keine, die noch auf Handys ohne Netz warten. ' +
       'Am besten erst schließen, wenn alle die Danke-Seite gesehen haben, oder am nächsten Tag.' +
-      (live
-        ? (withCourses ? ' Alle Kurse werden abgeschlossen; sämtliche Einmal-Codes sind damit abgelaufen.' : '') +
-          ' Live-Ansicht: Das Schließen ist nicht endgültig, die Umfrage kann wieder geöffnet werden.'
-        : withCourses
+      (withCourses
         ? ' Alle Kurse werden abgeschlossen; sämtliche QR-Codes und Einmal-Codes sind damit abgelaufen. ' +
           `Für Kurse mit mindestens ${minGroup} Antworten ist das endgültig: Ihre Ergebnisse werden freigegeben, und sie können ` +
           'nicht wieder geöffnet werden.'
@@ -41,9 +38,7 @@ export function confirmSurveyStatus(title: string, close: boolean, withCourses: 
       'Die Umfrage nimmt dann wieder Antworten an.' +
       (withCourses
         ? ' Die Kurse bleiben aber abgeschlossen und ihre QR-Codes abgelaufen, bis ein Kurs einzeln ' +
-          (live
-            ? '(„Für diesen Kurs wieder öffnen“ unter „Kurse und Einmal-Codes“) wieder geöffnet wird.'
-            : `(„Für diesen Kurs wieder öffnen“ unter „Kurse und Einmal-Codes“; nur bei weniger als ${minGroup} Antworten möglich) wieder öffnen.`)
+          `(„Für diesen Kurs wieder öffnen“ unter „Kurse und Einmal-Codes“; nur bei weniger als ${minGroup} Antworten möglich) wieder öffnen.`
         : '');
   return window.confirm(text);
 }

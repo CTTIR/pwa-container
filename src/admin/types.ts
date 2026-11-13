@@ -75,8 +75,6 @@ export interface SummaryResponse {
   definition: SurveyDefinition;
   /** Smallest group whose results are shown (k-anonymity), 5. */
   minGroup: number;
-  /** Live view: all answers at any time, no minimum group size, closing stays reversible. */
-  live?: boolean;
   /** Whether a printable questionnaire (paper.pdf) is available for download. */
   paperPdf?: boolean;
   /** Whether a manual for this administration page (manual.pdf) is available for download. */

@@ -14,8 +14,6 @@ interface Props {
   courses: CourseInfo[];
   /** Smallest group whose results are shown (minimum group size 5). */
   minGroup: number;
-  /** Live view: results of every course at once, closing stays reversible. */
-  live?: boolean;
   /** Global administration: may also delete released courses and courses with minGroup or more answers. */
   isGlobal: boolean;
   onChanged: () => Promise<void> | void;
@@ -68,7 +66,7 @@ function csvCell(v: string): string {
 type CodesState = CodeInfo[] | 'loading' | 'error';
 
 /** Courses (events) and their single-use access codes. */
-export function Courses({ surveyId, courses, minGroup, live = false, isGlobal, onChanged, onSheet }: Props) {
+export function Courses({ surveyId, courses, minGroup, isGlobal, onChanged, onSheet }: Props) {
   const [draft, setDraft] = useState<EventDraft>(EMPTY_DRAFT);
   const [count, setCount] = useState(30);
   const [more, setMore] = useState<Record<string, number>>({});
@@ -162,17 +160,15 @@ export function Courses({ surveyId, courses, minGroup, live = false, isGlobal, o
         'Andere Kurse und die Umfrage insgesamt laufen weiter. ' +
         'Auch Antworten, die noch auf Handys ohne Netz warten, werden danach abgelehnt – am besten erst abschließen, wenn alle ' +
         'die Danke-Seite gesehen haben, oder am nächsten Tag.\n\n' +
-        (live
-          ? 'Live-Ansicht: Das Abschließen ist nicht endgültig, der Kurs kann wieder geöffnet werden.'
-          : c.responsesBand === 'atLeastMin'
+        (c.responsesBand === 'atLeastMin'
           ? `Der Kurs hat ${minGroup} oder mehr Antworten: Das Abschließen ist ENDGÜLTIG. ` +
             'Die Ergebnisse werden sofort freigegeben, und der Kurs kann nicht wieder geöffnet werden.'
           : `Der Kurs hat weniger als ${minGroup} Antworten: Er kann noch wieder geöffnet werden, ` +
             `Ergebnisse werden nicht gezeigt. Hat ein abgeschlossener Kurs ${minGroup} oder mehr Antworten, ist das Abschließen endgültig ` +
             '(Ergebnisse freigegeben, kein Wiederöffnen).')
       : `Umfrage für den Kurs „${eventLine(c)}“ wieder öffnen?\n\n` +
-        'Nicht gesperrte, noch unbenutzte Codes gelten dann wieder (Antworten nur, solange auch die Umfrage offen ist).' +
-        (live ? '' : ` Sobald der Kurs erneut abgeschlossen wird und dann mindestens ${minGroup} Antworten hat, ist das endgültig.`);
+        'Nicht gesperrte, noch unbenutzte Codes gelten dann wieder (Antworten nur, solange auch die Umfrage offen ist). ' +
+        `Sobald der Kurs erneut abgeschlossen wird und dann mindestens ${minGroup} Antworten hat, ist das endgültig.`;
     if (!window.confirm(text)) return;
     void run(async () => {
       await adminFetch(courseApi(surveyId, c.id), { method: 'PATCH', body: JSON.stringify({ closed }) });
@@ -204,10 +200,9 @@ export function Courses({ surveyId, courses, minGroup, live = false, isGlobal, o
         Datum stehen auf jedem Zettel. Nach dem Absenden ist ein Code verbraucht. Antworten werden nur dem Kurs zugeordnet, nie dem
         Code; ob ein bestimmter Code benutzt wurde, zeigt die Verwaltung bewusst nicht an. Zettel zufällig austeilen und nicht
         notieren, wer welchen Zettel bekommt. Nach der Veranstaltung „Umfrage für diesen Kurs schließen“: Danach nimmt der Kurs keine Antworten
-        mehr an und alle seine Codes sind abgelaufen; andere Kurse laufen weiter.{' '}
-        {live
-          ? 'Live-Ansicht: Ergebnisse und genaue Zahlen sind jederzeit sichtbar, auch für offene Kurse; das Abschließen ist nicht endgültig.'
-          : `Hat er mindestens ${minGroup} Antworten, werden seine Ergebnisse freigegeben – dann ist das Abschließen endgültig, der Kurs kann nicht wieder geöffnet werden. Solange ein Kurs offen ist, zeigt die Verwaltung nur, ob schon ${minGroup} Antworten da sind – keine genauen Zahlen, damit sich einzelne Abgaben nicht beobachten lassen.`}
+        mehr an und alle seine Codes sind abgelaufen; andere Kurse laufen weiter. Hat er mindestens {minGroup} Antworten, werden seine Ergebnisse freigegeben – dann ist
+        das Abschließen endgültig, der Kurs kann nicht wieder geöffnet werden. Solange ein Kurs offen ist, zeigt die Verwaltung nur, ob
+        schon {minGroup} Antworten da sind – keine genauen Zahlen, damit sich einzelne Abgaben nicht beobachten lassen.
       </p>
       <p className="admin-note">
         Wichtig für die Anonymität: Codes nicht selbst ausfüllen und nicht ausgeteilte Zettel vernichten oder sperren. Die Anmeldung der
@@ -249,7 +244,7 @@ export function Courses({ surveyId, courses, minGroup, live = false, isGlobal, o
                 </div>
                 <div>
                   <dt>Ergebnisse freigegeben</dt>
-                  <dd className={c.released ? 'is-released' : ''}>{live ? 'ja (live)' : releaseText(c, minGroup)}</dd>
+                  <dd className={c.released ? 'is-released' : ''}>{releaseText(c, minGroup)}</dd>
                 </div>
               </dl>
               <div className="course-actions">
@@ -295,7 +290,7 @@ export function Courses({ surveyId, courses, minGroup, live = false, isGlobal, o
                   </span>
                 )}
                 {c.closed ? (
-                  c.released && !live ? (
+                  c.released ? (
                     <span className="course-final" title="Ergebnisse freigegeben – der Kurs kann nicht wieder geöffnet werden.">
                       endgültig abgeschlossen
                     </span>

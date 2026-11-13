@@ -363,7 +363,7 @@ export function createApp(deps: AppDeps) {
     }
     const status = registry.statusOf(app, now());
     if (status !== 'open') {
-      if (status === 'closed' && def.accessCodes) store.closeAllCourses(def.id, !def.liveResults);
+      if (status === 'closed' && def.accessCodes) store.closeAllCourses(def.id);
       sendJson(res, 409, { error: status });
       return;
     }
@@ -559,7 +559,7 @@ export function createApp(deps: AppDeps) {
     if (typeof code !== 'string' || code.length > 32 || !app.survey?.def.accessCodes) return sendJson(res, 400, { error: 'invalid' });
     const status = registry.statusOf(app, now());
     if (status !== 'open') {
-      if (status === 'closed') store.closeAllCourses(app.id, !app.survey.def.liveResults);
+      if (status === 'closed') store.closeAllCourses(app.id);
       return sendJson(res, 409, { error: 'closed' });
     }
     // Every check counts, and the check never tells whether a known code was already used:
@@ -753,7 +753,6 @@ export function createApp(deps: AppDeps) {
   /** Exact counts only for closed groups; open groups only as "below / at least MIN_GROUP". */
   function responseCounts(app: AppEntry, def: SurveyDefinition): { responses: number | null; responsesBand: 'belowMin' | 'atLeastMin' | null } {
     const total = store.count(app.id);
-    if (def.liveResults) return { responses: total, responsesBand: null };
     if (def.accessCodes) {
       const releasedCount = store
         .listCourses(app.id)
@@ -791,7 +790,6 @@ export function createApp(deps: AppDeps) {
       ...responseCounts(app, def),
       subtitle: def.subtitle ?? null,
       accessCodes: def.accessCodes ?? null,
-      liveResults: !!def.liveResults,
       courses: def.accessCodes ? store.listCourses(app.id).length : 0,
     };
   }
@@ -802,12 +800,6 @@ export function createApp(deps: AppDeps) {
    * MIN_GROUP", so nobody can watch single answers arrive.
    */
   function releaseView(app: AppEntry, def: SurveyDefinition) {
-    // Live view: everything is shown at once with exact counts. Nothing is recorded as released,
-    // so closing stays reversible.
-    if (def.liveResults) {
-      const courses = store.listCourses(def.id).map((c) => ({ ...c, released: true, responsesBand: null }));
-      return { courses, releasedCourseIds: courses.map((c) => c.id), uncodedReleased: def.accessCodes === 'optional', released: true };
-    }
     if (def.accessCodes) {
       const courses = store.listCourses(def.id).map((c) => {
         let released = c.released;
@@ -848,7 +840,6 @@ export function createApp(deps: AppDeps) {
   /** A survey without codes whose results are released may never accept answers again. */
   function releasedForGood(app: AppEntry, def: SurveyDefinition): boolean {
     if (def.accessCodes) return false;
-    if (def.liveResults) return store.appReleased(def.id);
     return releaseView(app, def).released;
   }
 
@@ -1031,7 +1022,7 @@ export function createApp(deps: AppDeps) {
         if (typeof closed !== 'boolean') return sendJson(res, 400, { error: 'closed must be boolean' });
         if (!closed && releasedForGood(app, def)) return sendJson(res, 409, { error: 'released_cannot_reopen' });
         registry.setStatusOverride(def.id, closed ? 'closed' : 'open');
-        const coursesClosed = closed ? store.closeAllCourses(def.id, !def.liveResults) : 0;
+        const coursesClosed = closed ? store.closeAllCourses(def.id) : 0;
         if (closed) releaseView(app, def); // records a release that this closing completes
         log(`survey ${def.id} ${closed ? 'closed' : 'reopened'}`);
         return sendJson(res, 200, { status: registry.statusOf(registry.get(def.id)!, now()), coursesClosed });
@@ -1091,7 +1082,7 @@ export function createApp(deps: AppDeps) {
           }
           // Release is one-way: reopening a released course would let organisers isolate single
           // new answers by comparing results before and after.
-          if (v.closed === false && (fresh.released || (!def.liveResults && fresh.closed && fresh.responses >= MIN_GROUP))) {
+          if (v.closed === false && (fresh.released || (fresh.closed && fresh.responses >= MIN_GROUP))) {
             return sendJson(res, 409, { error: 'released_cannot_reopen' });
           }
           store.updateCourse(def.id, courseId, {
@@ -1099,7 +1090,7 @@ export function createApp(deps: AppDeps) {
             eventDate: typeof v.eventDate === 'string' ? v.eventDate : undefined,
             eventDateEnd: v.eventDateEnd === undefined ? undefined : typeof v.eventDateEnd === 'string' && v.eventDateEnd ? v.eventDateEnd : null,
           });
-          if (typeof v.closed === 'boolean' && store.setCourseClosed(def.id, courseId, v.closed, !def.liveResults) === 'released') {
+          if (typeof v.closed === 'boolean' && store.setCourseClosed(def.id, courseId, v.closed) === 'released') {
             return sendJson(res, 409, { error: 'released_cannot_reopen' });
           }
           return sendJson(res, 200, { course: releaseView(app, def).courses.find((c) => c.id === courseId) });
@@ -1154,7 +1145,6 @@ export function createApp(deps: AppDeps) {
             survey: { ...appInfo(app), title: def.title, subtitle: def.subtitle ?? null },
             definition: def,
             minGroup: MIN_GROUP,
-            live: !!def.liveResults,
             role,
             released,
             responses: rows.length,
@@ -1368,7 +1358,7 @@ export function createApp(deps: AppDeps) {
         if (v !== 'closed' && app.survey && releasedForGood(app, app.survey.def)) return sendJson(res, 409, { error: 'released_cannot_reopen' });
         registry.setStatusOverride(app.id, v);
         if (v === 'closed' && app.survey) {
-          store.closeAllCourses(app.id, !app.survey.def.liveResults);
+          store.closeAllCourses(app.id);
           releaseView(registry.get(app.id)!, app.survey.def);
         }
       }

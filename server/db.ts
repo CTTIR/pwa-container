@@ -556,9 +556,9 @@ export class Store {
   }
 
   /** Closes every course of a survey (all its codes expire). Returns how many were open. */
-  closeAllCourses(surveyId: string, release = true): number {
+  closeAllCourses(surveyId: string): number {
     const open = this.cod(surveyId).prepare('SELECT id FROM courses WHERE survey_id = ? AND closed = 0').all(surveyId) as { id: string }[];
-    for (const c of open) this.setCourseClosed(surveyId, c.id, true, release);
+    for (const c of open) this.setCourseClosed(surveyId, c.id, true);
     return open.length;
   }
 
@@ -602,8 +602,7 @@ export class Store {
   }
 
   /** A closed course accepts no further responses; only closed courses can be released for results. */
-  /** `release`: a closed course with MIN_GROUP or more answers is released for good (not in live view). */
-  setCourseClosed(surveyId: string, courseId: string, closed: boolean, release = true): 'ok' | 'released' {
+  setCourseClosed(surveyId: string, courseId: string, closed: boolean): 'ok' | 'released' {
     const row = this.cod(surveyId).prepare('SELECT released FROM courses WHERE id = ? AND survey_id = ?').get(courseId, surveyId) as { released: number } | undefined;
     if (!row) return 'ok';
     // Release is permanent: a released course stays closed.
@@ -611,7 +610,7 @@ export class Store {
     this.cod(surveyId).prepare('UPDATE courses SET closed = ? WHERE id = ? AND survey_id = ?').run(closed ? 1 : 0, courseId, surveyId);
     if (closed) {
       const n = this.ans(surveyId).prepare('SELECT COUNT(*) AS n FROM responses WHERE survey_id = ? AND course_id = ?').get(surveyId, courseId) as { n: number };
-      if (release && n.n >= MIN_GROUP) this.cod(surveyId).prepare('UPDATE courses SET released = 1 WHERE id = ? AND survey_id = ?').run(courseId, surveyId);
+      if (n.n >= MIN_GROUP) this.cod(surveyId).prepare('UPDATE courses SET released = 1 WHERE id = ? AND survey_id = ?').run(courseId, surveyId);
       this.compactAnswers(surveyId, true);
     }
     return 'ok';
