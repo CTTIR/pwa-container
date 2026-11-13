@@ -87,8 +87,8 @@ export function Results({ surveyId }: { surveyId: string }) {
     const close = data.survey.status !== 'closed';
     const withCodes = !!data.definition.accessCodes;
     // Without codes the survey is released (and closing final) from minGroup responses on.
-    const final = !withCodes && data.released;
-    if (!confirmSurveyStatus(data.survey.title, close, withCodes, final, data.minGroup ?? MIN_GROUP)) return;
+    const final = !withCodes && data.released && !data.live;
+    if (!confirmSurveyStatus(data.survey.title, close, withCodes, final, data.minGroup ?? MIN_GROUP, !!data.live)) return;
     setBusy(true);
     setMessage(null);
     let failure: string | null = null;
@@ -130,6 +130,7 @@ export function Results({ surveyId }: { surveyId: string }) {
   }
   const k = data.minGroup ?? MIN_GROUP;
   const withCodes = !!definition.accessCodes;
+  const live = !!data.live;
   const released = courses.filter((c) => c.released);
   const openCourses = courses.filter((c) => !c.closed).length;
   const smallCourses = courses.filter((c) => c.closed && !c.released && (c.responses ?? 0) < k).length;
@@ -152,7 +153,7 @@ export function Results({ surveyId }: { surveyId: string }) {
     ratingFields.set(f.sectionId, list);
   }
   const closed = survey.status === 'closed';
-  const final = closed && !withCodes && data.released;
+  const final = closed && !withCodes && data.released && !live;
   const closesAt = formatDate(survey.closesAt);
 
   return (
@@ -168,12 +169,12 @@ export function Results({ surveyId }: { surveyId: string }) {
 
       <div className="admin-facts">
         <div>
-          <span className="fact-num">{shown ? data.responses : '–'}</span> {course ? 'Antworten in diesem Kurs' : 'freigegebene Antworten'}
+          <span className="fact-num">{shown ? data.responses : '–'}</span> {course ? 'Antworten in diesem Kurs' : live ? 'Antworten (live)' : 'freigegebene Antworten'}
         </div>
         <div>
           Umfrage: <strong>{STATUS[survey.status]}</strong>
         </div>
-        {withCodes && (
+        {withCodes && !live && (
           <div>
             Kurse freigegeben: {released.length} von {courses.length}
           </div>
@@ -204,7 +205,7 @@ export function Results({ surveyId }: { surveyId: string }) {
               ? `Die Umfrage ist endgültig geschlossen: Sie hat mindestens ${k} Antworten, die Ergebnisse sind freigegeben.`
               : closed
                 ? 'Die Umfrage nimmt keine Antworten an.'
-                : `Schließen beendet die Umfrage: keine weiteren Antworten${data.released ? ' – endgültig, da schon mindestens ' + k + ' Antworten vorliegen' : ''}.`}
+                : `Schließen beendet die Umfrage: keine weiteren Antworten${data.released && !live ? ' – endgültig, da schon mindestens ' + k + ' Antworten vorliegen' : ''}.`}
           </span>
         </div>
       )}
@@ -234,6 +235,17 @@ export function Results({ surveyId }: { surveyId: string }) {
         </div>
       )}
 
+      {live ? (
+        <div className={`panel ${shown ? 'privacy-panel' : 'panel-warn'}`}>
+          <strong className="panel-title">{shown ? 'Live-Ansicht' : 'Noch keine Antworten'}</strong>
+          <p>
+            Für diese Umfrage ist die Live-Ansicht eingeschaltet: Die Auswertung zeigt alle eingegangenen Antworten sofort, mit
+            genauen Zahlen, ohne Mindestanzahl und ohne dass ein Kurs abgeschlossen werden muss. Mit „Aktualisieren“ die neuesten
+            Antworten laden. Antworten tragen weder Datum noch Uhrzeit. Im Bereich „Datenbank“ stehen alle Einzelantworten mit
+            Freitexten und Fotos zur Verfügung.
+          </p>
+        </div>
+      ) : (
       <div className={`panel ${shown ? 'privacy-panel' : 'panel-warn'}`}>
         <strong className="panel-title">
           {shown ? 'Schutz der Anonymität' : course ? 'Für diesen Kurs sind keine Ergebnisse freigegeben' : 'Noch keine Ergebnisse freigegeben'}
@@ -254,12 +266,13 @@ export function Results({ surveyId }: { surveyId: string }) {
         )}
         {!shown && withCodes && courses.length === 0 && <p>Es sind noch keine Kurse angelegt.</p>}
       </div>
+      )}
 
       {withCodes && released.length > 0 && (
         <label className="course-filter">
           Kurs
           <select className="text-input" value={course} onChange={(e) => chooseCourse(e.target.value)}>
-            <option value="">Alle freigegebenen Kurse ({released.length})</option>
+            <option value="">{live ? 'Alle Kurse' : 'Alle freigegebenen Kurse'} ({released.length})</option>
             {released.map((c) => (
               <option key={c.id} value={c.id}>
                 {eventLine(c)} ({c.responses})
@@ -306,12 +319,13 @@ export function Results({ surveyId }: { surveyId: string }) {
           Aktualisieren
         </button>
       </div>
-      {shown && <p className="course-line">Auswertung für: {current ? eventLine(current) : withCodes ? 'alle freigegebenen Kurse' : 'alle Antworten'}</p>}
+      {shown && <p className="course-line">Auswertung für: {current ? eventLine(current) : withCodes ? (live ? 'alle Kurse' : 'alle freigegebenen Kurse') : 'alle Antworten'}</p>}
 
       {withCodes && <Courses
           surveyId={surveyId}
           courses={courses}
           minGroup={k}
+          live={live}
           isGlobal={data.role === 'global'}
           onChanged={() => load()}
           onSheet={setSheet}

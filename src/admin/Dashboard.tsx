@@ -27,6 +27,8 @@ interface AppInfo {
   collectRecords: boolean;
   records: number;
   accessCodes?: 'required' | 'optional' | null;
+  /** Live view: closing is never final. */
+  liveResults?: boolean;
   courses?: number;
 }
 
@@ -249,9 +251,9 @@ function AppCard({ app, act, appDomain }: { app: AppInfo; act: Act; appDomain: s
 
   const isSurvey = app.type === 'survey';
   /** Without access codes, closing is final once the survey has 5 or more responses. */
-  const final = isSurvey && reopenBlocked(!!app.accessCodes, app.responses ?? 0);
+  const final = isSurvey && !app.liveResults && reopenBlocked(!!app.accessCodes, app.responses ?? 0);
   const setStatus = (close: boolean) => {
-    if (!confirmSurveyStatus(app.title, close, !!app.accessCodes, final)) return;
+    if (!confirmSurveyStatus(app.title, close, !!app.accessCodes, final, undefined, !!app.liveResults)) return;
     void act(
       () => setSurveyClosed(app.id, close),
       (r) =>

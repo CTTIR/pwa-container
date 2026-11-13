@@ -154,6 +154,12 @@ export interface SurveyDefinition {
    * (not only for the browser tab, as for shared course devices) until they are sent.
    */
   personalDevices?: boolean;
+  /**
+   * The administration sees all answers at any time (live): no minimum group size and no closing
+   * needed before results are shown, exact counts while open. For surveys whose participants are
+   * not anonymous towards the organisers anyway (e.g. observers giving their name).
+   */
+  liveResults?: boolean;
   intro: TextBlock;
   /** Shown at the top of the start page; the start button needs its checkbox ticked. */
   notice?: ConfirmBlock;
@@ -298,6 +304,7 @@ export function validateDefinition(raw: unknown): string[] {
   if (d.gated === true && d.accessCodes !== 'required') errors.push('gated needs accessCodes "required"');
   if (d.personalDevices !== undefined && typeof d.personalDevices !== 'boolean') errors.push('personalDevices must be a boolean');
   if (d.personalDevices === true && d.accessCodes === undefined) errors.push('personalDevices needs accessCodes');
+  if (d.liveResults !== undefined && typeof d.liveResults !== 'boolean') errors.push('liveResults must be a boolean');
   checkTextBlock(d.intro, 'intro', errors);
   checkTextBlock(d.thanks, 'thanks', errors);
   if (d.privacy !== undefined) checkTextBlock(d.privacy, 'privacy', errors);

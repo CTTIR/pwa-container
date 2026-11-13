@@ -663,6 +663,53 @@ describe('gated surveys (the link alone reveals nothing)', () => {
   });
 });
 
+describe('live results (no minimum group, no closing needed)', () => {
+  const def = () => {
+    const d = JSON.parse(fs.readFileSync(path.join(surveysDir, 'example-course-feedback', 'survey.json'), 'utf8'));
+    d.id = 'live-survey';
+    d.accessCodes = 'required';
+    d.liveResults = true;
+    return d;
+  };
+  const adminWrite = { Authorization: ADMIN, ...WRITE };
+  const results = (rest: string) => `${base}/admin/api/results/live-survey/${rest}`;
+  const sid = (n: number) => `${String(n).padStart(8, '0')}-7777-4777-8777-777777777777`;
+  let codes: string[] = [];
+  let courseId = '';
+  const post = (n: number, code: string) =>
+    fetch(`${base}/api/surveys/live-survey/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ submissionId: sid(n), surveyVersion: 1, answers, code }),
+    });
+
+  it('shows a single answer of an open course at once, with exact counts', async () => {
+    expect((await fetch(`${base}/admin/api/apps/surveys`, { method: 'POST', headers: adminWrite, body: JSON.stringify(def()) })).status).toBe(201);
+    const created = await fetch(results('courses'), { method: 'POST', headers: adminWrite, body: JSON.stringify({ label: 'Live', eventDate: '2026-11-14', count: 6 }) });
+    const body = (await created.json()) as { course: { id: string }; codes: string[] };
+    codes = body.codes;
+    courseId = body.course.id;
+    expect((await post(1, codes[0])).status).toBe(201);
+    const summary = (await (await fetch(results('summary'), { headers: { Authorization: ADMIN } })).json()) as {
+      released: boolean; responses: number; live: boolean; courses: { responses: number; used: number; released: boolean; closed: boolean }[];
+    };
+    expect(summary).toMatchObject({ released: true, responses: 1, live: true });
+    expect(summary.courses[0]).toMatchObject({ responses: 1, used: 1, released: true, closed: false });
+    const perCourse = (await (await fetch(results(`summary?course=${courseId}`), { headers: { Authorization: ADMIN } })).json()) as { released: boolean; responses: number };
+    expect(perCourse).toMatchObject({ released: true, responses: 1 });
+    const apps = (await (await fetch(`${base}/admin/api/apps`, { headers: { Authorization: ADMIN } })).json()) as { apps: { id: string; responses: number | null; liveResults: boolean }[] };
+    expect(apps.apps.find((a) => a.id === 'live-survey')).toMatchObject({ responses: 1, liveResults: true });
+  });
+
+  it('keeps closing a course reversible, also with five or more answers', async () => {
+    for (let i = 2; i <= 5; i++) expect((await post(i, codes[i - 1])).status).toBe(201);
+    const patch = (closed: boolean) => fetch(results(`courses/${courseId}`), { method: 'PATCH', headers: adminWrite, body: JSON.stringify({ closed }) });
+    expect((await patch(true)).status).toBe(200);
+    expect((await patch(false)).status).toBe(200);
+    expect((await post(6, codes[5])).status).toBe(201);
+  });
+});
+
 describe('optional codes', () => {
   it('accepts no further code-less answers once those are released, also with disguised empty codes', async () => {
     const d = JSON.parse(fs.readFileSync(path.join(surveysDir, 'example-course-feedback', 'survey.json'), 'utf8'));
