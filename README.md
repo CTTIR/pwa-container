@@ -49,6 +49,8 @@ Survey responses are anonymous by construction:
   responses.
   - Free texts are only shown there separately from ratings, shuffled per question.
   - Nobody can see which individual code was used.
+  - Exception: a survey with `liveResults: true` (see Settings) shows its results at once, with
+    exact counts while it is open, so single answers can be watched as they arrive.
 - **Full data for the survey's own administration:** the global administration and the survey's
   own credentials can read every stored single response of that survey, including free texts,
   version and course, at any time through the "Datenbank" section
@@ -133,6 +135,11 @@ A survey is one `survey.json`. See
     and the survey's pages address it by a neutral alias instead of its id.
   - `personalDevices: true` (needs `accessCodes`): drafts with their code are kept on the device
     across tabs, for surveys answered on people's own phones.
+  - `liveResults: true`: the administration sees the results at any time, without the minimum
+    group of five and without closing first; counts are exact while the survey is open, and
+    closing a course stays reversible. This gives up the protection of the results page, so use it
+    only where participants are not anonymous towards the organisers anyway (e.g. named
+    observers), and say so in the survey's privacy notice.
   - `theme`: the name of a folder in `/themes` with a `theme.css` that overrides the CSS variables
     in [`src/styles.css`](src/styles.css).
 - **Versions:** once a version has responses, its content cannot change without increasing
