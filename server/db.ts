@@ -947,6 +947,9 @@ export class Store {
     this.appTotals.delete(id);
     this.cod(id).prepare('DELETE FROM access_codes WHERE survey_id = ?').run(id);
     this.cod(id).prepare('DELETE FROM courses WHERE survey_id = ?').run(id);
+    // The app's photos go with it (a later app with the same id must not inherit them).
+    const folder = this.appFolder(id);
+    if (folder) fs.rmSync(path.join(folder, 'photos'), { recursive: true, force: true });
     this.compact(null, 'main', true);
     this.compact(id, 'answers', true);
     this.compact(id, 'codes', true);

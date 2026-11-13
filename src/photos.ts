@@ -30,9 +30,25 @@ function openDb(): Promise<IDBDatabase | null> {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' }).createIndex('survey', 'survey');
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-      req.onblocked = () => resolve(null);
+      req.onsuccess = () => {
+        const db = req.result;
+        // A lost connection (iOS after some time in the background) or a newer version elsewhere:
+        // open a fresh connection next time instead of failing for the rest of the session.
+        db.onclose = () => (dbPromise = null);
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        dbPromise = null;
+        resolve(null);
+      };
+      req.onblocked = () => {
+        dbPromise = null;
+        resolve(null);
+      };
     } catch {
       resolve(null);
     }
@@ -40,22 +56,33 @@ function openDb(): Promise<IDBDatabase | null> {
   return dbPromise;
 }
 
-function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | null> {
+/** A failed storage operation, as opposed to an empty result. */
+const FAILED = Symbol('failed');
+
+function attempt<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | null | typeof FAILED> {
   return openDb().then(
     (db) =>
-      new Promise<T | null>((resolve) => {
-        if (!db) return resolve(null);
+      new Promise<T | null | typeof FAILED>((resolve) => {
+        if (!db) return resolve(FAILED);
         try {
           const tx = db.transaction(STORE, mode);
           const req = fn(tx.objectStore(STORE));
           tx.oncomplete = () => resolve(req ? (req.result as T) : null);
-          tx.onerror = () => resolve(null);
-          tx.onabort = () => resolve(null);
+          tx.onerror = () => resolve(FAILED);
+          tx.onabort = () => resolve(FAILED);
         } catch {
-          resolve(null);
+          // e.g. InvalidStateError on a connection that was closed meanwhile.
+          dbPromise = null;
+          resolve(FAILED);
         }
       }),
   );
+}
+
+async function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T> | void): Promise<T | null> {
+  let r = await attempt(mode, fn);
+  if (r === FAILED) r = await attempt(mode, fn); // once more on a fresh connection
+  return r === FAILED ? null : r;
 }
 
 export function newPhotoId(): string {
@@ -113,8 +140,15 @@ export const photoDb = {
   save: async (survey: string, id: string, blob: Blob): Promise<boolean> =>
     (await run('readwrite', (s) => s.put({ id, survey, blob, expiresAt: Date.now() + KEEP_MS } satisfies PhotoRecord))) !== null,
   get: async (id: string): Promise<Blob | null> => {
-    const r = await run<PhotoRecord | undefined>('readonly', (s) => s.get(id));
-    if (!r || r.expiresAt <= Date.now()) return null;
+    const r = await photoDb.load(id);
+    return r instanceof Blob ? r : null;
+  },
+  /** The photo, 'missing' when it is not (or no longer) on the device, 'error' when storage failed. */
+  load: async (id: string): Promise<Blob | 'missing' | 'error'> => {
+    let r = await attempt<PhotoRecord | undefined>('readonly', (s) => s.get(id));
+    if (r === FAILED) r = await attempt<PhotoRecord | undefined>('readonly', (s) => s.get(id));
+    if (r === FAILED) return 'error';
+    if (!r || r.expiresAt <= Date.now()) return 'missing';
     return r.blob;
   },
   remove: async (ids: string[]): Promise<void> => {

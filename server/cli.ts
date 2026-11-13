@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { generatePassword, hashPassword } from './auth.ts';
 import { loadConfig } from './config.ts';
 import { Store } from './db.ts';
+import { PhotoStore } from './photos.ts';
 import { validateDefinition } from '../shared/schema.ts';
 
 // Files this process creates (databases, routes) are not readable for others on the host.
@@ -54,6 +55,7 @@ switch (command) {
     const store = new Store(loadConfig().dataDir);
     if (!store.hasDatabase(arg)) throw new Error(`no database for ${arg}`);
     console.log(`deleted ${store.purge(arg)} response(s) of ${arg}`);
+    new PhotoStore((id) => store.appFolder(id)).removeAll(arg);
     store.close();
     break;
   }

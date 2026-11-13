@@ -93,8 +93,31 @@ A survey is one `survey.json`. See
   - `matrix`: one row rated in several columns, e.g. before / after; stored as `<id>_<column>`
   - `text`: single or multi-line, with `maxLength`
   - `choice`: single or multiple choice
+  - `photo`: up to `max` photos (1–10, default 3)
+- **Scales:** `display` is `"buttons"` (default) or `"slider"`. A slider needs consecutive
+  ascending integer values (e.g. 1 … 5) and shows a track from the low to the high end with every
+  value marked; it has no value until it is touched. With `step` (only on sliders, must divide 1,
+  e.g. `0.1`) it is continuous: every multiple of `step` between the first and last value is an
+  answer (e.g. `4.7`), and summaries count each value towards the nearest marked option. Matrix
+  rows on a slider scale are sliders too.
+- **Scale items** may also have:
+  - `anchors` (`min`, `max`): the words at the two ends of a slider, instead of the first and
+    last option labels
+  - `comment` (`label`, optional `id`, `maxLength` up to 20000): a free-text remark under the
+    item, stored as its own text field (default key `<id>_txt`)
+  - `photos` (optional `id`, `max` 1–10 with default 3, `label`): photos to the item, stored as
+    their own field (default key `<id>_foto`)
+
+  These three are only allowed on `scale` items.
+- **Photos:** taken or chosen on the device, scaled down and sent as JPEG (at most 3 MB each). The
+  server keeps only well-formed JPEGs, removes their metadata (EXIF incl. location, XMP, comments)
+  and sets file times to the epoch, so neither content nor files tell when anyone took part. They
+  are stored per app next to the answers database, not inside the answers; the answers only hold
+  their random ids.
 - **Content:** sections with optional descriptions and scale legend, intro and privacy text, a
-  thank-you text, and `**bold**` emphasis in texts.
+  thank-you text, and `**bold**` emphasis in texts. A section may carry a short `label` (1–8
+  characters, e.g. `"IV"`) shown instead of its number; `sectionNav: true` adds a menu to jump
+  between sections.
 - **Notice:** an optional `notice` (`heading`, `paragraphs`, `confirm`) is shown at the top of the
   start page, e.g. for a test version. The start button stays disabled until its checkbox is
   ticked, and the server refuses answers without that confirmation (`notice_not_confirmed`).
@@ -103,7 +126,13 @@ A survey is one `survey.json`. See
     by hand.
   - `subdomain`: the preferred label when the survey is first installed; otherwise a random one is
     assigned.
-  - `accessCodes`: `"required"` or `"optional"` switches on single-use codes per course.
+  - `accessCodes`: `"required"` or `"optional"` switches on single-use codes per course. Drafts
+    then stay only in the browser tab, for shared devices.
+  - `gated: true` (needs `accessCodes: "required"`): the survey link alone shows only a code
+    entry; the questionnaire, photos and answer details are served only with a valid unused code,
+    and the survey's pages address it by a neutral alias instead of its id.
+  - `personalDevices: true` (needs `accessCodes`): drafts with their code are kept on the device
+    across tabs, for surveys answered on people's own phones.
   - `theme`: the name of a folder in `/themes` with a `theme.css` that overrides the CSS variables
     in [`src/styles.css`](src/styles.css).
 - **Versions:** once a version has responses, its content cannot change without increasing

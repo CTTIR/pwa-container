@@ -145,6 +145,8 @@ export function SurveyApp({ surveyId }: { surveyId: string }) {
   const adoptDefinition = (data: SurveyResponse) => {
     // Surveys with codes keep drafts only for this tab (shared devices).
     storage.useSessionDrafts(tabOnly(data.definition));
+    // Also when the definition came from the copy on the device (offline start).
+    if (data.definition.gated) gated.current = true;
     live.current.def = data.definition;
     document.title = data.definition.title;
     document.documentElement.lang = data.definition.locale;

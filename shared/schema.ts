@@ -197,9 +197,10 @@ export function commentItem(item: ScaleItem): TextItem {
 }
 
 /** The photo item that stores the photos of a scale item. */
-export function photoItem(item: ScaleItem): PhotoItem {
+export function photoItem(item: ScaleItem, locale: Locale = 'de'): PhotoItem {
   const p = item.photos!;
-  return { id: p.id ?? `${item.id}_foto`, type: 'photo', text: `${stripBold(item.text)} – ${p.label ?? 'Fotos'}`, max: p.max };
+  const label = p.label ?? (locale === 'en' ? 'Photos' : 'Fotos');
+  return { id: p.id ?? `${item.id}_foto`, type: 'photo', text: `${stripBold(item.text)} – ${label}`, max: p.max };
 }
 
 /** Photo ids referenced anywhere in an answer set. */
@@ -232,7 +233,7 @@ export function fieldsOf(def: SurveyDefinition): Field[] {
           out.push({ key: c.id, item: c, sectionId: section.id, parent: item.id });
         }
         if (item.type === 'scale' && item.photos) {
-          const p = photoItem(item);
+          const p = photoItem(item, def.locale);
           out.push({ key: p.id, item: p, sectionId: section.id, parent: item.id });
         }
       }
@@ -296,6 +297,7 @@ export function validateDefinition(raw: unknown): string[] {
   if (d.gated !== undefined && typeof d.gated !== 'boolean') errors.push('gated must be a boolean');
   if (d.gated === true && d.accessCodes !== 'required') errors.push('gated needs accessCodes "required"');
   if (d.personalDevices !== undefined && typeof d.personalDevices !== 'boolean') errors.push('personalDevices must be a boolean');
+  if (d.personalDevices === true && d.accessCodes === undefined) errors.push('personalDevices needs accessCodes');
   checkTextBlock(d.intro, 'intro', errors);
   checkTextBlock(d.thanks, 'thanks', errors);
   if (d.privacy !== undefined) checkTextBlock(d.privacy, 'privacy', errors);
@@ -337,8 +339,8 @@ export function validateDefinition(raw: unknown): string[] {
       if (scale.step !== undefined) {
         const st = scale.step as number;
         if (scale.display !== 'slider') errors.push(`scale ${name}.step needs display "slider"`);
-        else if (typeof st !== 'number' || !(st > 0 && st <= 1) || Math.abs(Math.round(1 / st) * st - 1) > 1e-9) {
-          errors.push(`scale ${name}.step must divide 1 (e.g. 0.1, 0.25, 0.5)`);
+        else if (typeof st !== 'number' || !(st >= 0.01 && st <= 1) || Math.abs(Math.round(1 / st) * st - 1) > 1e-9) {
+          errors.push(`scale ${name}.step must divide 1 and be at least 0.01 (e.g. 0.1, 0.25, 0.5)`);
         }
       }
       if (scale.notApplicable !== undefined) {
@@ -366,8 +368,8 @@ export function validateDefinition(raw: unknown): string[] {
     else if (sectionIds.has(section.id)) errors.push(`${where}.id ${section.id} is duplicated`);
     else sectionIds.add(section.id);
     if (!isNonEmptyString(section.title)) errors.push(`${where}.title is required`);
-    if (section.label !== undefined && (typeof section.label !== 'string' || section.label.length > 8)) {
-      errors.push(`${where}.label must be a string of at most 8 characters`);
+    if (section.label !== undefined && (!isNonEmptyString(section.label) || section.label.length > 8)) {
+      errors.push(`${where}.label must be a non-empty string of at most 8 characters`);
     }
     if (section.legendScale !== undefined && !scaleNames.has(section.legendScale as string)) {
       errors.push(`${where}.legendScale refers to an unknown scale`);
@@ -391,6 +393,11 @@ export function validateDefinition(raw: unknown): string[] {
         if (keys.has(key)) errors.push(`answer key ${key} is duplicated`);
         keys.add(key);
       };
+      if (item.type !== 'scale') {
+        for (const k of ['anchors', 'comment', 'photos'] as const) {
+          if (item[k] !== undefined) errors.push(`${w}.${k} is only allowed on scale items`);
+        }
+      }
       switch (item.type) {
         case 'scale':
           if (!scaleNames.has(item.scale as string)) errors.push(`${w} refers to unknown scale`);
@@ -466,13 +473,26 @@ export function validateDefinition(raw: unknown): string[] {
   return errors;
 }
 
+/** Decimal places of a slider step: 0.1 -> 1, 0.25 -> 2, 0.125 -> 3. */
+export function stepDecimals(step: number): number {
+  const s = String(step);
+  const e = s.match(/e-(\d+)$/);
+  if (e) return Number(e[1]) + (s.split('e')[0].split('.')[1]?.length ?? 0);
+  return s.split('.')[1]?.length ?? 0;
+}
+
+/** The nearest value on a slider's grid `lo + k * step`, without float noise. */
+export function snapToStep(value: number, lo: number, step: number): number {
+  return Number((lo + Math.round((value - lo) / step) * step).toFixed(stepDecimals(step)));
+}
+
 function allowedScaleValue(scale: Scale, value: unknown): boolean {
   if (typeof value === 'number' && scale.step !== undefined) {
     const lo = scale.options[0].value;
     const hi = scale.options[scale.options.length - 1].value;
     if (!Number.isFinite(value) || value < lo || value > hi) return false;
-    const steps = (value - lo) / scale.step;
-    return Math.abs(steps - Math.round(steps)) < 1e-6;
+    // Only exact grid values (as the slider sends them, e.g. 4.7), never float noise like 4.70000001.
+    return value === snapToStep(value, lo, scale.step);
   }
   if (typeof value === 'number') return scale.options.some((o) => o.value === value);
   if (typeof value === 'string') return scale.notApplicable?.value === value;

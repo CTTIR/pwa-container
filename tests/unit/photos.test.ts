@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { createApp } from '../../server/app.ts';
 import { AdminAuth, hashPassword } from '../../server/auth.ts';
 import { Store } from '../../server/db.ts';
-import { cleanJpeg, crc32 } from '../../server/photos.ts';
+import { cleanJpeg, crc32, PhotoStore } from '../../server/photos.ts';
 import { AppRegistry } from '../../server/registry.ts';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-photos-test-'));
@@ -104,6 +104,15 @@ describe('jpeg cleaning', () => {
     expect(clean.subarray(-7).equals(Buffer.from([0x12, 0x34, 0xff, 0x00, 0x56, 0xff, 0xd9]))).toBe(true);
   });
 
+  it('ends the image at its first end-of-image marker, dropping appended images with metadata', () => {
+    const src = jpegWithExif();
+    const tail = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x0d]), Buffer.from('GPSLatitude'), Buffer.from([0xff, 0xd9])]);
+    const clean = cleanJpeg(Buffer.concat([src, tail]))!;
+    expect(clean).not.toBeNull();
+    expect(clean.includes(Buffer.from('GPSLatitude'))).toBe(false);
+    expect(clean.equals(cleanJpeg(src)!)).toBe(true);
+  });
+
   it('rejects what is not a JPEG', () => {
     expect(cleanJpeg(Buffer.from('<svg></svg>'))).toBeNull();
     expect(cleanJpeg(Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0xff, 0xff]))).toBeNull();
@@ -177,5 +186,31 @@ describe('photos with answers', () => {
     });
     expect(res.status).toBe(200);
     expect(fs.existsSync(path.join(dataDir, 'db', 'photo-survey', 'photos'))).toBe(false);
+  });
+});
+
+describe('photo maintenance', () => {
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, 0x11, 0x22, 0xff, 0xd9]);
+  const id = (c: string) => c.repeat(32);
+
+  it('spares photos sent since the last run, then removes unreferenced ones and rewrites the rest', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pwa-photo-maint-'));
+    const ps = new PhotoStore(() => dir);
+    expect(cleanJpeg(jpeg)).not.toBeNull();
+    expect(ps.put('app', id('a'), jpeg)).toBe('stored');
+    expect(ps.put('app', id('b'), jpeg)).toBe('stored');
+    // First run: both are fresh (their answers may still be on the way).
+    expect(ps.maintain('app', new Set())).toBe(0);
+    expect(ps.ids('app').sort()).toEqual([id('a'), id('b')]);
+    const before = fs.statSync(path.join(dir, 'photos', `${id('a')}.jpg`)).ino;
+    // Second run: only the referenced one stays; the remaining file is a new one.
+    expect(ps.put('app', id('c'), jpeg)).toBe('stored');
+    expect(ps.maintain('app', new Set([id('a')]))).toBe(1);
+    expect(ps.ids('app').sort()).toEqual([id('a'), id('c')]);
+    const st = fs.statSync(path.join(dir, 'photos', `${id('a')}.jpg`));
+    expect(st.ino).not.toBe(before);
+    expect(st.mtimeMs).toBe(0);
+    expect(fs.readdirSync(path.join(dir, 'photos')).some((n) => n.endsWith('.tmp'))).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

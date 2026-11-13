@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ServerResponse } from 'node:http';
@@ -41,14 +42,28 @@ export function cleanJpeg(buf: Buffer): Buffer | null {
     const segment = buf.subarray(i, i + 2 + len);
     i += 2 + len;
     if (marker === 0xda) {
-      // Start of scan: the entropy-coded data and everything after it are kept as they are, up
-      // to the end-of-image marker. Later APPn/COM segments between scans are very rare and
-      // carry no camera metadata.
-      const rest = buf.subarray(i);
-      const end = rest.lastIndexOf(Buffer.from([0xff, 0xd9]));
-      if (end < 0) return null;
-      out.push(segment, rest.subarray(0, end + 2));
-      return Buffer.concat(out);
+      // Start of scan: its entropy-coded data runs up to the next real marker (FF00 is a stuffed
+      // byte, RSTn and fill bytes belong to the data). The image ends at the first end-of-image
+      // marker: anything after it (a second image with its own EXIF, a gain map, a motion-photo
+      // video) is dropped. Segments between the scans of a progressive JPEG go through the loop.
+      out.push(segment);
+      let j = i;
+      while (j + 1 < buf.length) {
+        const m = buf[j + 1];
+        if (buf[j] !== 0xff || m === 0x00 || m === 0xff || (m >= 0xd0 && m <= 0xd7)) {
+          j += buf[j] === 0xff && m !== 0xff ? 2 : 1;
+          continue;
+        }
+        break;
+      }
+      if (j + 1 >= buf.length) return null;
+      out.push(buf.subarray(i, j));
+      i = j;
+      if (buf[j + 1] === 0xd9) {
+        out.push(buf.subarray(j, j + 2));
+        return Buffer.concat(out);
+      }
+      continue;
     }
     const isApp = marker >= 0xe1 && marker <= 0xef;
     if (isApp || marker === 0xfe) continue;
@@ -60,6 +75,8 @@ export function cleanJpeg(buf: Buffer): Buffer | null {
 export class PhotoStore {
   private memory = new Map<string, Map<string, Buffer>>();
   private usage = new Map<string, { count: number; bytes: number }>();
+  /** Photos stored since the last maintenance run, per app (memory only, never written down). */
+  private fresh = new Map<string, Set<string>>();
 
   /** `root(appId)` gives the app's database folder, or null to keep photos in memory (tests). */
   private appRoot: (appId: string) => string | null;
@@ -155,7 +172,71 @@ export class PhotoStore {
     }
     u.count++;
     u.bytes += clean.length;
+    let f2 = this.fresh.get(appId);
+    if (!f2) this.fresh.set(appId, (f2 = new Set()));
+    f2.add(id);
     return 'stored';
+  }
+
+  /** Overwrites a photo file with zeros before removing it, like the databases' secure_delete. */
+  private remove(appId: string, id: string): void {
+    const f = this.file(appId, id);
+    if (!f) {
+      this.mem(appId).delete(id);
+      return;
+    }
+    try {
+      const fd = fs.openSync(f, 'r+');
+      try {
+        fs.writeSync(fd, Buffer.alloc(fs.fstatSync(fd).size));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      /* already gone */
+    }
+    fs.rmSync(f, { force: true });
+  }
+
+  /**
+   * Periodic maintenance. Removes photos no stored answer refers to, except those stored since the
+   * last run (their answers may still be on the way). If anything changed, every remaining photo is
+   * then rewritten in random order: utimes cannot reset a file's change time, and inode numbers
+   * follow creation order, so without this the files would tell when and in which order answers
+   * were sent. Afterwards they only tell "before this run". Returns how many photos were removed.
+   */
+  maintain(appId: string, referenced: Set<string>): number {
+    const fresh = this.fresh.get(appId) ?? new Set<string>();
+    this.fresh.delete(appId);
+    let removed = 0;
+    for (const id of this.ids(appId)) {
+      if (referenced.has(id) || fresh.has(id)) continue;
+      this.remove(appId, id);
+      removed++;
+    }
+    const dir = this.dir(appId);
+    if (dir && (removed || fresh.size)) {
+      const ids = this.ids(appId);
+      for (let i = ids.length - 1; i > 0; i--) {
+        const j = randomInt(0, i + 1);
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+      }
+      for (const id of ids) {
+        const f = path.join(dir, `${id}.jpg`);
+        const tmp = path.join(dir, `.${id}.tmp`);
+        try {
+          fs.copyFileSync(f, tmp);
+          fs.utimesSync(tmp, EPOCH, EPOCH);
+          fs.renameSync(tmp, f);
+        } catch {
+          fs.rmSync(tmp, { force: true });
+        }
+      }
+      if (fs.existsSync(dir)) fs.utimesSync(dir, EPOCH, EPOCH);
+    }
+    this.usage.delete(appId);
+    return removed;
   }
 
   /** Removes every photo of the app that no stored answer refers to; returns how many. */
@@ -163,9 +244,7 @@ export class PhotoStore {
     let removed = 0;
     for (const id of this.ids(appId)) {
       if (referenced.has(id)) continue;
-      const f = this.file(appId, id);
-      if (f) fs.rmSync(f, { force: true });
-      else this.mem(appId).delete(id);
+      this.remove(appId, id);
       removed++;
     }
     const dir = this.dir(appId);
@@ -175,6 +254,8 @@ export class PhotoStore {
   }
 
   removeAll(appId: string): void {
+    for (const id of this.ids(appId)) this.remove(appId, id);
+    this.fresh.delete(appId);
     const dir = this.dir(appId);
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
     this.memory.delete(appId);
@@ -210,11 +291,21 @@ export async function streamZip(res: ServerResponse, entries: { name: string; lo
   const write = (b: Buffer) =>
     new Promise<void>((resolve, reject) => {
       offset += b.length;
-      if (res.write(b)) resolve();
-      else {
-        res.once('drain', resolve);
-        res.once('error', reject);
-      }
+      if (res.destroyed) return reject(new Error('download aborted'));
+      if (res.write(b)) return resolve();
+      // An aborted download emits neither 'drain' nor 'error', only 'close'.
+      const done = (err?: Error) => {
+        res.off('drain', onDrain);
+        res.off('error', done);
+        res.off('close', onClose);
+        if (err) reject(err);
+        else resolve();
+      };
+      const onDrain = () => done();
+      const onClose = () => done(new Error('download aborted'));
+      res.on('drain', onDrain);
+      res.on('error', done);
+      res.on('close', onClose);
     });
   const DOS_DATE = (0 << 9) | (1 << 5) | 1; // 1980-01-01
   let count = 0;

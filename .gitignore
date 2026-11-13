@@ -20,3 +20,5 @@ admins.json
 .Codex/
 AGENTS.md
 CLAUDE.md
+.cursor/
+.mcp.json

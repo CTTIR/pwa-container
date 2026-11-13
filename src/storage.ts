@@ -206,14 +206,25 @@ export const storage = {
     remove(doneKey(id));
     remove(doneKey(id), 'session');
   },
-  /** Last definition (and status) loaded from the server, for offline visits. */
+  /**
+   * Last definition (and status) loaded from the server, for offline visits. A gated survey on
+   * shared devices (codes without `personalDevices`) keeps it only for this tab, so the next
+   * person with the bare link sees nothing of the questionnaire.
+   */
   loadDefinitionCopy: (id: string): SurveyResponse | null => {
-    const v = get<unknown>(definitionKey(id));
+    const v = get<unknown>(definitionKey(id)) ?? get<unknown>(definitionKey(id), 'session');
     return isSurveyResponse(v) ? v : null;
   },
-  clearDefinitionCopy: (id: string) => remove(definitionKey(id)),
-  saveDefinitionCopy: (id: string, data: SurveyResponse) =>
-    set(definitionKey(id), { definition: data.definition, status: data.status, opensAt: data.opensAt, closesAt: data.closesAt }),
+  clearDefinitionCopy: (id: string) => {
+    remove(definitionKey(id));
+    remove(definitionKey(id), 'session');
+  },
+  saveDefinitionCopy: (id: string, data: SurveyResponse) => {
+    const d = data.definition;
+    const area = d.gated && d.accessCodes && !d.personalDevices ? 'session' : 'local';
+    set(definitionKey(id), { definition: d, status: data.status, opensAt: data.opensAt, closesAt: data.closesAt }, area);
+    remove(definitionKey(id), area === 'session' ? 'local' : 'session');
+  },
   /**
    * Discards expired drafts and outboxes of every survey on this device. Entries without an
    * expiry (older app version) get one now; an expiry further away than KEEP_MS (clock was

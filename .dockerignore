@@ -8,3 +8,12 @@ playwright-report
 .github
 *.sqlite*
 admins.json
+# secrets and local agent / tooling files never enter the build context
+.env*
+.claude/
+.codex/
+.Codex/
+.cursor/
+.mcp.json
+CLAUDE.md
+AGENTS.md

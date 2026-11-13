@@ -47,7 +47,8 @@ const server = http.createServer((req, res) => {
 });
 // Backstop: an unexpected rejection is logged instead of ending the process.
 process.on('unhandledRejection', (reason) => log(`unhandled rejection: ${(reason as Error)?.message ?? String(reason)}`));
-server.requestTimeout = 60_000;
+// Long enough for a photo upload on a slow mobile link (the photo route allows 120 s itself).
+server.requestTimeout = 130_000;
 server.headersTimeout = 15_000;
 server.maxConnections = 512;
 server.listen(config.port, config.host, () => {
@@ -58,6 +59,7 @@ server.listen(config.port, config.host, () => {
 setInterval(() => {
   try {
     store.maintenance();
+    handler.maintenance();
   } catch (err) {
     log(`maintenance failed: ${(err as Error).message}`);
   }

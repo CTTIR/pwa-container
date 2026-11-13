@@ -84,11 +84,11 @@ export function ItemCard({ def, item, answers, missing, onAnswer, t }: Props) {
               {item.photos && (
                 <PhotoField
                   surveyId={def.id}
-                  fieldKey={photoItem(item).id}
+                  fieldKey={photoItem(item, def.locale).id}
                   max={item.photos.max}
                   label={label}
-                  value={answers[photoItem(item).id]}
-                  onChange={(v) => onAnswer(photoItem(item).id, v)}
+                  value={answers[photoItem(item, def.locale).id]}
+                  onChange={(v) => onAnswer(photoItem(item, def.locale).id, v)}
                   t={t}
                   compact
                 />

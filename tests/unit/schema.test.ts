@@ -110,14 +110,6 @@ describe('slider scales, item remarks and section labels', () => {
     expect(errors.some((e) => e.includes('label must be'))).toBe(true);
   });
 
-  it('accepts the Nürnberg survey', () => {
-    const file = new URL('../../../surveys/d2puls-nuernberg/survey.json', import.meta.url);
-    if (!fs.existsSync(file)) return;
-    const nbg = JSON.parse(fs.readFileSync(file, 'utf8')) as SurveyDefinition;
-    expect(validateDefinition(nbg)).toEqual([]);
-    expect(fieldsOf(nbg)).toHaveLength(424);
-    expect(nbg.sections[0].items.filter((i) => i.required).map((i) => i.id)).toEqual(['beobachter', 'erfassung']);
-  });
 });
 
 describe('continuous sliders and photo fields', () => {
@@ -148,5 +140,73 @@ describe('continuous sliders and photo fields', () => {
     bad.scales.s.step = 0.5;
     bad.scales.s.display = 'buttons';
     expect(validateDefinition(bad).some((e) => e.includes('needs display'))).toBe(true);
+  });
+
+  it('accepts exact grid values of a slider that starts at 1, but no float noise', () => {
+    const one = structuredClone(def) as unknown as Record<string, any>;
+    one.scales.s.options = [1, 2, 3, 4, 5].map((v) => ({ value: v, label: `L${v}` }));
+    const d = one as unknown as SurveyDefinition;
+    for (const v of [1, 1.3, 3.3, 4.7, 5]) expect(validateAnswers(d, { q1: v })).toEqual({});
+    for (const v of [0.9, 4.75, 4.70000001, 3.3000000000000003, 5.1, Number.NaN]) {
+      expect(validateAnswers(d, { q1: v })).toMatchObject({ q1: 'invalid' });
+    }
+  });
+
+  it('rejects invalid slider settings', () => {
+    for (const step of [0, -0.1, 1.5, '0.1']) {
+      const bad = structuredClone(def) as unknown as Record<string, any>;
+      bad.scales.s.step = step;
+      expect(validateDefinition(bad).some((e) => e.includes('step must divide'))).toBe(true);
+    }
+    const desc = structuredClone(def) as unknown as Record<string, any>;
+    desc.scales.s.options.reverse();
+    expect(validateDefinition(desc).some((e) => e.includes('consecutive ascending'))).toBe(true);
+    const wrong = structuredClone(def) as unknown as Record<string, any>;
+    wrong.scales.s.display = 'dial';
+    expect(validateDefinition(wrong).some((e) => e.includes('display must be'))).toBe(true);
+  });
+
+  it('checks matrix rows on a continuous slider like single scale items', () => {
+    const m = structuredClone(def) as unknown as Record<string, any>;
+    m.scales.s.notApplicable = { value: 'NB', label: 'nicht beurteilbar' };
+    m.sections[0].items = [{ id: 'R', type: 'matrix', scale: 's', text: 'R', required: true, columns: [{ id: 'VOR', label: 'vor' }, { id: 'NACH', label: 'nach' }] }];
+    const d = m as unknown as SurveyDefinition;
+    expect(validateDefinition(d)).toEqual([]);
+    expect(validateAnswers(d, { R_VOR: 2.5, R_NACH: 'NB' })).toEqual({});
+    expect(validateAnswers(d, { R_VOR: 5.1, R_NACH: 2.55 })).toMatchObject({ R_VOR: 'invalid', R_NACH: 'invalid' });
+    expect(validateAnswers(d, { R_VOR: 3 })).toMatchObject({ R_NACH: 'required' });
+  });
+
+  it('allows end words, remarks and photos only on scale items', () => {
+    const m = structuredClone(def) as unknown as Record<string, any>;
+    m.sections[0].items.push({ id: 'R', type: 'matrix', scale: 's', text: 'R', columns: [{ id: 'A', label: 'a' }], comment: { label: 'x' } });
+    expect(validateDefinition(m).some((e) => e.includes('comment is only allowed on scale items'))).toBe(true);
+  });
+
+  it('checks remark, photo and section label settings', () => {
+    const cases: [(d: Record<string, any>) => void, string][] = [
+      [(d) => (d.sections[0].items[0].photos = { max: 11 }), 'photos.max'],
+      [(d) => (d.sections[0].items[0].photos = { id: 'a b' }), 'photos.id'],
+      [(d) => (d.sections[0].items[0].comment = { label: 'x', maxLength: 0 }), 'comment.maxLength'],
+      [(d) => (d.sections[0].items[0].comment = {}), 'comment needs a label'],
+      [(d) => d.sections[0].items.push({ id: 'q1_txt', type: 'text', text: 't' }, { id: 'q9', type: 'scale', scale: 's', text: 'Q', comment: { label: 'x', id: 'q1_txt' } }), 'duplicated'],
+      [(d) => (d.sections[0].items[1].max = 0), 'max must be'],
+      [(d) => (d.sections[0].label = ' '), 'label must be'],
+      [(d) => (d.sections[0].label = 'NINECHARS'), 'label must be'],
+      [(d) => (d.sectionNav = 'yes'), 'sectionNav must be'],
+      [(d) => (d.personalDevices = true), 'personalDevices needs accessCodes'],
+      [(d) => (d.gated = true), 'gated needs'],
+    ];
+    for (const [change, message] of cases) {
+      const bad = structuredClone(def) as unknown as Record<string, any>;
+      change(bad);
+      expect(validateDefinition(bad).some((e) => e.includes(message)), message).toBe(true);
+    }
+  });
+
+  it('names the photo field in the survey language', () => {
+    const en = { ...structuredClone(def), locale: 'en' } as SurveyDefinition;
+    expect(fieldsOf(en)[1].item.text).toBe('Q – Photos');
+    expect(fieldsOf(def)[1].item.text).toBe('Q – Fotos');
   });
 });

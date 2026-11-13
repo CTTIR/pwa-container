@@ -332,8 +332,8 @@ export function createApp(deps: AppDeps) {
    * may go on; otherwise it has been answered. Used codes pass here (the insert refuses them), so
    * this check cannot tell which slip was used either.
    */
-  function gateByCode(res: ServerResponse, app: AppEntry, raw: unknown): boolean {
-    if (!app.survey?.def.gated) return true;
+  function gateByCode(res: ServerResponse, app: AppEntry, raw: unknown, always = false): boolean {
+    if (!app.survey?.def.gated && !always) return true;
     const code = typeof raw === 'string' && raw.length <= 32 ? normalizeCode(raw) : '';
     if (!code) {
       sendJson(res, 422, { error: 'code_required' });
@@ -388,7 +388,7 @@ export function createApp(deps: AppDeps) {
       sendJson(res, 422, { error: 'invalid', fields: problems, version: def.version });
       return;
     }
-    // Photos are uploaded before the answers; the device sends missing ones again.
+    // The device sends its answers first and then exactly the photos named here, then the answers again.
     const missingPhotos = photoIdsOf(def, payload.answers as Record<string, never>).filter((id) => !photos.has(def.id, id));
     if (missingPhotos.length > 0) {
       sendJson(res, 409, { error: 'photo_missing', photos: missingPhotos });
@@ -442,8 +442,9 @@ export function createApp(deps: AppDeps) {
   /** One photo of an answer set, sent before the answers. */
   async function handlePhotoUpload(req: IncomingMessage, res: ServerResponse, app: AppEntry, photoId: string): Promise<void> {
     const def = app.survey!.def;
-    // Gated: nothing (not even whether the survey takes photos) before a valid code.
-    if (def.gated && !gateByCode(res, app, req.headers['x-access-code'])) {
+    // Gated: nothing (not even whether the survey takes photos) before a valid code. Whenever
+    // answers need a code, photos need one too, so strangers cannot fill the photo storage.
+    if (!gateByCode(res, app, req.headers['x-access-code'], def.accessCodes === 'required')) {
       req.resume();
       return;
     }
@@ -461,11 +462,23 @@ export function createApp(deps: AppDeps) {
       req.resume();
       return sendJson(res, 409, { error: status });
     }
-    if (!photoBucket(def.id).take()) {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_PHOTO_BYTES) {
+      req.resume();
+      return sendJson(res, 413, { error: 'too_large' });
+    }
+    // Uploads are held in memory: few at a time across all apps (clients retry later).
+    if (photoUploadsInFlight >= MAX_PHOTO_UPLOADS_IN_FLIGHT || !photoBucket(def.id).take()) {
       req.resume();
       return sendJson(res, 429, { error: 'busy' });
     }
-    const body = await readBody(req, MAX_PHOTO_BYTES, 120_000);
+    photoUploadsInFlight++;
+    let body: Awaited<ReturnType<typeof readBody>>;
+    try {
+      body = await readBody(req, MAX_PHOTO_BYTES, 120_000);
+    } finally {
+      photoUploadsInFlight--;
+    }
     if (body === 'too_large') return sendJson(res, 413, { error: 'too_large' });
     if (body === 'aborted') return;
     const r = photos.put(def.id, photoId, body);
@@ -474,6 +487,8 @@ export function createApp(deps: AppDeps) {
     return sendJson(res, r === 'stored' ? 201 : 200, { status: r });
   }
 
+  const MAX_PHOTO_UPLOADS_IN_FLIGHT = 16;
+  let photoUploadsInFlight = 0;
   const photoBuckets = new Map<string, Bucket>();
   function photoBucket(surveyId: string): Bucket {
     let b = photoBuckets.get(surveyId);
@@ -481,15 +496,32 @@ export function createApp(deps: AppDeps) {
     return b;
   }
 
+  /** Photo ids any stored answer of the app refers to. */
+  function referencedPhotos(appId: string): Set<string> {
+    const referenced = new Set<string>();
+    for (const r of store.rawResponses(appId)) {
+      for (const v of Object.values(r.answers)) if (Array.isArray(v)) for (const x of v) if (typeof x === 'string' && PHOTO_ID_PATTERN.test(x)) referenced.add(x);
+    }
+    return referenced;
+  }
+
   /** Photos no stored answer refers to (failed or deleted submissions) are removed. */
   function sweepPhotos(def: SurveyDefinition): void {
     if (!photos.ids(def.id).length) return;
-    const referenced = new Set<string>();
-    for (const r of store.rawResponses(def.id)) {
-      for (const v of Object.values(r.answers)) if (Array.isArray(v)) for (const x of v) if (PHOTO_ID_PATTERN.test(x)) referenced.add(x);
-    }
-    const n = photos.sweep(def.id, referenced);
+    const n = photos.sweep(def.id, referencedPhotos(def.id));
     if (n) log(`removed ${n} unreferenced photo(s) of ${def.id}`);
+  }
+
+  /**
+   * Hourly: photos of abandoned submissions are removed (those sent since the last run are spared,
+   * their answers may still be on the way), and changed photo folders are rewritten in random order.
+   */
+  function photoMaintenance(): void {
+    for (const app of registry.list()) {
+      if (!photos.ids(app.id).length) continue;
+      const n = photos.maintain(app.id, referencedPhotos(app.id));
+      if (n) log(`removed ${n} unreferenced photo(s) of ${app.id}`);
+    }
   }
 
   const submitBuckets = new Map<string, Bucket>();
@@ -533,8 +565,12 @@ export function createApp(deps: AppDeps) {
     // Every check counts, and the check never tells whether a known code was already used:
     // a used code is only refused when answers are submitted with it. So nobody can find out
     // which slip was used by checking codes.
-    if (!codeCheckBucket(app.id).take()) return sendJson(res, 429, { error: 'too_many_attempts' });
+    // Only checks that fail count against the survey's shared limit, so a flood of wrong codes
+    // cannot lock out participants with valid ones (a gated survey opens only through this check).
     const check = store.checkCode(app.id, code);
+    if (check.status !== 'ok' && check.status !== 'used' && !codeCheckBucket(app.id).take()) {
+      return sendJson(res, 429, { error: 'too_many_attempts' });
+    }
     if (check.status === 'ok' || check.status === 'used') {
       // Gated surveys hand out their definition only here, together with a valid code.
       // `status` is this check's answer here, so the survey's state goes as `surveyStatus`.
@@ -1368,7 +1404,9 @@ export function createApp(deps: AppDeps) {
     sendText(res, 404, 'Not found');
   }
 
-  return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  return Object.assign(handle, { maintenance: photoMaintenance });
+
+  async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     securityHeaders(res);
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');

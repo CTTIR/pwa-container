@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import type { Scale, ScaleAnchors } from '../../shared/schema.ts';
+import { snapToStep, stepDecimals, type Scale, type ScaleAnchors } from '../../shared/schema.ts';
 import type { Strings } from '../i18n.ts';
 import { Inline, stripMarkers } from './RichText.tsx';
 
@@ -20,7 +20,7 @@ interface Props {
  * under the track, with a word at each end. Until it is touched the slider has no value: the
  * thumb is hidden, so a resting thumb in the middle is never mistaken for an answer.
  */
-export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid, required, describedBy }: Props) {
+export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid, describedBy }: Props) {
   const min = scale.options[0].value;
   const max = scale.options[scale.options.length - 1].value;
   const na = scale.notApplicable;
@@ -28,23 +28,30 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
   const isNa = na !== undefined && value === na.value;
   const input = useRef<HTMLInputElement>(null);
   const step = scale.step ?? 1;
-  const decimals = Math.max(0, Math.ceil(-Math.log10(step) - 1e-9));
+  const decimals = stepDecimals(step);
   const position = rated ? (value as number) : Math.round((min + max) / 2);
   const optionLabel = (v: number) => scale.options.find((o) => o.value === v)?.label ?? '';
-  const snap = (v: number) => Number((Math.round((v - min) / step) * step + min).toFixed(decimals));
+  const snap = (v: number) => snapToStep(v, min, step);
   const pick = (v: number) => onChange(snap(Math.min(max, Math.max(min, v))));
   const show = (v: number) => v.toLocaleString(document.documentElement.lang || 'de', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   // The words of the nearest marked value describe a continuous rating.
   const describe = (v: number) => `${show(v)} – ${stripMarkers(optionLabel(Math.round(v)))}`;
   // Take the value under the finger on release: a tap on the resting thumb of an unrated slider
   // fires no input event, and iOS Safari does not move the thumb on a tap on the track at all.
+  // Only when the gesture itself moved nothing, and never for a tap on the thumb of a rated slider
+  // (which would otherwise shift the rating by up to half a thumb width).
+  const moved = useRef(false);
   const settle = (clientX: number) => {
     const el = input.current;
-    if (!el) return;
+    if (!el || moved.current) return;
     const r = el.getBoundingClientRect();
     const thumb = parseFloat(getComputedStyle(el).getPropertyValue('--thumb')) || 30;
     const span = r.width - thumb;
     if (span <= 0) return;
+    if (rated) {
+      const at = r.left + thumb / 2 + (((value as number) - min) / (max - min)) * span;
+      if (Math.abs(clientX - at) <= thumb / 2) return;
+    }
     const frac = Math.min(1, Math.max(0, (clientX - r.left - thumb / 2) / span));
     pick(min + frac * (max - min));
   };
@@ -65,11 +72,16 @@ export function ScaleSlider({ scale, anchors, value, onChange, label, t, invalid
         value={position}
         aria-label={`${name} (${min} = ${stripMarkers(anchors.min)}, ${max} = ${stripMarkers(anchors.max)})`}
         aria-valuetext={rated ? describe(value as number) : isNa ? stripMarkers(na!.label) : t.notRated}
-        aria-required={required || undefined}
         aria-invalid={invalid || undefined}
         aria-describedby={describedBy || undefined}
-        onChange={(e) => pick(Number(e.target.value))}
-        onPointerUp={(e) => settle(e.clientX)}
+        onChange={(e) => {
+          moved.current = true;
+          pick(Number(e.target.value));
+        }}
+        onPointerDown={() => (moved.current = false)}
+        onPointerUp={(e) => {
+          if (e.button === 0) settle(e.clientX);
+        }}
         onKeyUp={(e) => {
           if (!rated && (e.key === 'Enter' || e.key === ' ')) pick(position);
         }}
